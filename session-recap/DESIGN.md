@@ -26,8 +26,8 @@ line 142.
 | Idle fallback | None — focus state `unknown` (no DECSET 1004) = feature off. | Kept, but only armed when the terminal has *not* demonstrated focus support (no `ESC[I`/`ESC[O` seen this session). |
 | Output | Persistent dim `※` transcript system message (`away_summary` subtype), excluded from API context. | Transient widget above the editor (pi-idiomatic, non-polluting), cleared on next input. |
 | Model | `getSmallFastModel()` — Haiku or `ANTHROPIC_SMALL_FAST_MODEL`. Never the active model. | Anthropic Haiku 4.5, or GPT-5.6 Luna when the active model is GPT and its provider offers Luna; otherwise the active model. `--recap-model` overrides this. |
-| Context | Last **30 raw messages** + session memory, instruction appended as a user message, `skipCacheWrite: true`. | Two-tier compact text transcript (~12k char cap) to avoid paying for old assistant text and tool results that add little orientation. |
-| Prompt | "Write exactly 1-3 short sentences. Start by stating the high-level task — what they are building or debugging, not implementation details. Next: the concrete next step. **Skip status reports and commit recaps.**" | Adopted near-verbatim. This was v0.1's biggest miss — our old prompt asked for a status report, which is exactly what CC bans. |
+| Context | Last **30 raw messages** + session memory, instruction appended as a user message, `skipCacheWrite: true`. | A **30-message LLM-ready window** in native roles + the initial request and latest compaction or branch summary as broader context. |
+| Prompt | "Write exactly 1-3 short sentences. Start by stating the high-level task — what they are building or debugging, not implementation details. Next: the concrete next step. **Skip status reports and commit recaps.**" | Adopted verbatim, with no custom system prompt. |
 | Dedupe | Max one summary per user turn (`hasSummarySinceLastUserTurn`). | Recap-prompt fingerprinting (same prompt = no new model call, even if Pi appends metadata entries). |
 | In-flight abort on refocus | Yes — summary appended to transcript late would be weird. | No — a widget landing moments after return is exactly when it helps. |
 
@@ -76,7 +76,8 @@ Selection order:
 
 Haiku is deliberately Anthropic-only. Luna is limited to GPT sessions and stays
 on the active provider. Automatic choices use only available models.
-Calls use no tools or reasoning, `cacheRetention: "none"`, and `maxTokens: 256`.
+Calls use no tools and request no reasoning level, with
+`cacheRetention: "none"` and `maxTokens: 256`.
 No model or failed auth resolution skips the recap silently.
 
 `apiKey` may legitimately be absent when auth succeeds for env or ambient-auth
@@ -85,64 +86,45 @@ providers. The resolved headers and environment are passed to `completeSimple`.
 > **Import note:** as of pi 0.80.x, `completeSimple` lives in
 > `@earendil-works/pi-ai/compat`; the root export dropped it.
 
-## Context fed to the model — two-tier transcript
+## Context fed to the model
 
-CC's insight: the recap's job is task re-orientation, and the task framing
-lives in the *conversation*, not in the last tool call. CC affords the last 30
-raw messages because it pays Haiku prices; we get the same orientation for
-~500 extra tokens by being selective:
+The recap call follows Claude Code's structure: a 30-message recent window is
+converted through Pi's normal LLM-context path and kept in its native user,
+assistant, and tool-result roles, followed by the recap instruction as a user
+message. When available, the initial request and latest compaction or branch
+summary are prepended to that final instruction as broader context. Initial
+requests longer than 8,000 characters keep their first and last 4,000.
 
-**Tier 1 — task framing (cheap):**
-- Most recent compaction or branch-summary entry, trimmed to 600 chars —
-  already-distilled task context (pi's analog of CC's session memory).
-- Up to 4 user prompts *before* the latest one, trimmed to 300 chars each.
-  Old assistant text and tool results add cost, not orientation.
-
-**Tier 2 — recent detail (since the last user message, inclusive):**
-- User text (≤1200 chars), assistant text (≤1200 chars)
-- Tool calls as `- <name>(<JSON args, ≤280 chars>)`
-- Tool results as `Result(<name>): <text, ≤400 chars>`
-
-Whole transcript capped at 12,000 chars (~3k tokens), so worst-case cost is
-unchanged from v0.1. The same builder serves resume/fork recaps (v0.1 passed
-the whole branch for resume; tier 1 now covers that need).
+Compaction and branch summaries are supplied once rather than duplicated in
+the recent message window. Tool results keep their first and last 2,000
+characters. A window boundary that falls inside a group of tool results
+expands to include their assistant tool call; an assistant-led window gets a
+short synthetic user boundary for provider compatibility.
 
 ## Prompt
 
-One user message plus a terse system prompt (some providers require a
-non-empty instruction string). Philosophy from CC: orient, don't report.
+The instruction is appended after the recent messages, following Claude Code
+verbatim. No custom system prompt is added.
 
 ```
-The user stepped away from this coding-agent session and is coming back.
-Write a short recap so they can re-enter flow.
-
-Rules:
-- Write 1-3 short sentences of plain text. No preamble, no markdown, no bullets.
-- Start by stating the high-level task — what the user is building, fixing, or
-  debugging — not implementation minutiae.
-- End with the concrete next step, if there is one.
-- Skip status reports and commit recaps; orient the reader instead.
-- If the last turn was aborted or errored, say so explicitly (e.g. "aborted
-  during X", "errored at Y").
-- Use file/function names where they matter. Max ~400 characters.
-
-<transcript>
-…
-</transcript>
+The user stepped away and is coming back. Write exactly 1-3 short sentences.
+Start by stating the high-level task — what they are building or debugging,
+not implementation details. Next: the concrete next step. Skip status reports
+and commit recaps.
 ```
 
-Post-processing: whitespace is collapsed to single spaces and capped at 600 characters.
+Post-processing only collapses whitespace; `maxTokens: 256` bounds the response.
 
 ## Edge cases
 
 1. **Turn still running when a trigger fires** — deferred to `agent_end` via
    the pending bit (CC-equivalent). `--recap-during-active` opts out.
 2. **Repeated blur/refocus with no new activity** — recap-prompt fingerprinting skips
-   regeneration. The fingerprint is derived from the capped transcript sent to
-   the model, not from the raw session leaf, so metadata-only entries do not
+   regeneration. The fingerprint is derived from the exact recap context sent
+   to the model, not from the raw session leaf, so metadata-only entries do not
    spend another call.
 3. **Errored/aborted turns** — triggers arm on `turn_end`, which fires
-   regardless of outcome; the prompt asks the model to say so explicitly.
+   regardless of outcome.
 4. **Terminal without DECSET `?1004`** — idle fallback covers it, and only
    runs there: the first real focus event disarms the idle path for the
    session. Caveat: on a supporting terminal where the user never switches

@@ -22,6 +22,17 @@ function makePi() {
 const pi = makePi();
 sessionRecap(pi);
 
+const branch = [
+	{ type: "message", message: { role: "user", content: "Please fix the bridge integration." } },
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "I inspected the integration and prepared the next concrete change." }],
+		},
+	},
+];
+
 const widgets = [];
 const ctx = {
 	hasUI: true,
@@ -44,16 +55,8 @@ const ctx = {
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unused" }),
 	},
 	sessionManager: {
-		getBranch: () => [
-			{ type: "message", message: { role: "user", content: "Please fix the bridge integration." } },
-			{
-				type: "message",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "I inspected the integration and prepared the next concrete change." }],
-				},
-			},
-		],
+		getBranch: () => branch,
+		buildContextEntries: () => branch,
 	},
 	ui: {
 		setStatus() {},
