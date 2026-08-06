@@ -29,8 +29,8 @@
  *
  * Model: uses Claude Haiku 4.5 for Anthropic sessions, or GPT-5.6 Luna when
  * the active model is GPT and its provider offers Luna. Otherwise it keeps
- * the active model. Reasoning and cache writes are disabled. Override with
- * `--recap-model "<provider>/<id>"`.
+ * the active model. No reasoning level is requested; cache writes are
+ * disabled. Override with `--recap-model "<provider>/<id>"`.
  *
  * Flags:
  *   --recap-away-seconds <n>   Continuous blur before an away recap (default 90)
@@ -45,8 +45,15 @@
  */
 
 import { createHash } from "node:crypto";
+import type { Message } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	convertToLlm,
+	sessionEntryToContextMessages,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 
 type ContentBlock = {
 	type?: string;
@@ -55,18 +62,12 @@ type ContentBlock = {
 	arguments?: Record<string, unknown>;
 };
 
-type Entry = {
-	id?: string;
-	type: string;
-	summary?: string; // compaction / branch_summary entries
-	message?: {
-		role?: string;
-		content?: unknown;
-		toolName?: string;
-	};
-};
-
 type Model = Parameters<typeof completeSimple>[0];
+
+type RecapContext = {
+	messages: Message[];
+	broaderContext?: string;
+};
 
 type RecapReason = "idle" | "manual" | "resume" | "focus";
 
@@ -83,15 +84,10 @@ const LUNA_RECAP_MODEL = /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/;
 // immediately followed by the next turn_start) don't trigger drafts.
 const POST_TURN_DEBOUNCE_MS = 3000;
 
-// Task-framing context limits (tier 1 of the transcript).
-const EARLIER_USER_PROMPTS = 4;
-const EARLIER_PROMPT_CHARS = 300;
-const COMPACTION_SUMMARY_CHARS = 600;
-
-// Model input cap. The dedupe fingerprint hashes exactly this capped prompt
-// payload, so irrelevant session metadata or over-cap transcript changes do
-// not spend another recap call.
-const TRANSCRIPT_CHAR_CAP = 12000;
+const RECENT_MESSAGE_WINDOW = 30;
+const INITIAL_TASK_EDGE_CHARS = 4000;
+const TOOL_RESULT_EDGE_CHARS = 2000;
+const EARLIER_CONTEXT_MARKER = "(Earlier conversation omitted.)";
 
 // DECSET 1004 focus reporting — https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
 const FOCUS_ENABLE = "\x1b[?1004h";
@@ -127,95 +123,92 @@ function extractToolCalls(content: unknown): string[] {
 	return out;
 }
 
-/**
- * Two-tier transcript:
- *
- *   Tier 1 — task framing (cheap): the most recent compaction/branch summary
- *   if present, plus the last few *user* prompts before the latest one,
- *   trimmed hard. This is what lets the model state the high-level task
- *   instead of parroting the last tool call. Claude Code feeds the last 30
- *   raw messages to Haiku; user prompts preserve the framing without paying
- *   for old tool results.
- *
- *   Tier 2 — recent detail: everything since the last user message, with the
- *   same per-item trimming as before (assistant text, tool calls, results).
- */
-function buildTranscript(entries: Entry[]): string {
-	const userIdxs: number[] = [];
-	for (let i = 0; i < entries.length; i++) {
-		const e = entries[i];
-		if (e.type === "message" && e.message?.role === "user") userIdxs.push(i);
-	}
-	const lastUserIdx = userIdxs.length > 0 ? userIdxs[userIdxs.length - 1] : -1;
-
-	const lines: string[] = [];
-
-	// Tier 1a: most recent compaction / branch summary — already-distilled task context.
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const e = entries[i];
-		if (
-			(e.type === "compaction" || e.type === "branch_summary") &&
-			typeof e.summary === "string" &&
-			e.summary.trim()
-		) {
-			lines.push(`Session summary so far: ${e.summary.trim().slice(0, COMPACTION_SUMMARY_CHARS)}`);
+export function buildRecapContext(
+	contextEntries: SessionEntry[],
+	branchEntries: SessionEntry[],
+): RecapContext {
+	let summary: string | undefined;
+	for (let i = contextEntries.length - 1; i >= 0; i--) {
+		const entry = contextEntries[i];
+		const candidate =
+			entry.type === "compaction" || entry.type === "branch_summary" ? entry.summary?.trim() : undefined;
+		if (candidate) {
+			summary = candidate;
 			break;
 		}
 	}
 
-	// Tier 1b: earlier user prompts (task framing), oldest → newest.
-	const earlier = userIdxs.slice(0, -1).slice(-EARLIER_USER_PROMPTS);
-	const earlierLines: string[] = [];
-	for (const i of earlier) {
-		const t = extractText(entries[i].message?.content).trim();
-		if (t) earlierLines.push(`- ${t.slice(0, EARLIER_PROMPT_CHARS)}`);
-	}
-	if (earlierLines.length > 0) {
-		lines.push("Earlier user prompts (task framing):");
-		lines.push(...earlierLines);
+	let initialTask: string | undefined;
+	for (const entry of branchEntries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		initialTask = extractText(entry.message.content).trim() || undefined;
+		break;
 	}
 
-	// Tier 2: full compact detail since the last user message (inclusive).
-	const slice = lastUserIdx >= 0 ? entries.slice(lastUserIdx) : entries;
-	const detail: string[] = [];
-	for (const e of slice) {
-		if (e.type !== "message" || !e.message?.role) continue;
-		const role = e.message.role;
-		if (role === "user") {
-			const t = extractText(e.message.content).trim();
-			if (t) detail.push(`User: ${t.slice(0, 1200)}`);
-		} else if (role === "assistant") {
-			const t = extractText(e.message.content).trim();
-			if (t) detail.push(`Assistant: ${t.slice(0, 1200)}`);
-			const calls = extractToolCalls(e.message.content);
-			if (calls.length) detail.push(...calls);
-		} else if (role === "toolResult") {
-			const t = extractText(e.message.content).trim();
-			const name = e.message.toolName ?? "tool";
-			if (t) detail.push(`Result(${name}): ${t.slice(0, 400)}`);
-		}
-	}
-	if (detail.length > 0) {
-		lines.push("Recent activity (since the user's last message):");
-		lines.push(...detail);
+	const messages = convertToLlm(
+		contextEntries
+			.filter((entry) => entry.type !== "compaction" && entry.type !== "branch_summary")
+			.flatMap(sessionEntryToContextMessages),
+	).map((message) => {
+		if (message.role !== "toolResult") return message;
+		return {
+			...message,
+			content: message.content.map((block) => {
+				if (block.type !== "text" || block.text.length <= TOOL_RESULT_EDGE_CHARS * 2) return block;
+				return {
+					...block,
+					text: `${block.text.slice(0, TOOL_RESULT_EDGE_CHARS)}\n… [tool result truncated for recap] …\n${block.text.slice(-TOOL_RESULT_EDGE_CHARS)}`,
+				};
+			}),
+		};
+	});
+	let start = Math.max(0, messages.length - RECENT_MESSAGE_WINDOW);
+	while (start > 0 && messages[start]?.role === "toolResult") start--;
+	let recentMessages = messages.slice(start);
+	while (recentMessages[0]?.role === "toolResult") recentMessages = recentMessages.slice(1);
+	if (recentMessages[0]?.role === "assistant") {
+		recentMessages = [
+			{
+				role: "user",
+				content: EARLIER_CONTEXT_MARKER,
+				timestamp: recentMessages[0].timestamp,
+			},
+			...recentMessages,
+		];
 	}
 
-	return lines.join("\n");
+	const broader: string[] = [];
+	const initialTaskInRecent = recentMessages.some(
+		(message) => message.role === "user" && extractText(message.content).trim() === initialTask,
+	);
+	if (initialTask && !initialTaskInRecent) {
+		const framedInitialTask =
+			initialTask.length <= INITIAL_TASK_EDGE_CHARS * 2
+				? initialTask
+				: `${initialTask.slice(0, INITIAL_TASK_EDGE_CHARS)}\n… [middle of initial request omitted for recap] …\n${initialTask.slice(-INITIAL_TASK_EDGE_CHARS)}`;
+		broader.push(`Initial user request:\n${framedInitialTask}`);
+	}
+	if (summary) broader.push(`Session summary:\n${summary}`);
+
+	return {
+		messages: recentMessages,
+		broaderContext: broader.length > 0 ? broader.join("\n\n") : undefined,
+	};
 }
 
-function recapStateKey(transcript: string): string {
-	return createHash("sha256").update(transcript.slice(0, TRANSCRIPT_CHAR_CAP)).digest("hex");
+function recapStateKey(context: RecapContext): string {
+	return createHash("sha256").update(JSON.stringify(context)).digest("hex");
 }
 
 /**
  * Only draft a recap if there has been real agent activity since the last user
  * message: at least one tool call, or ~30+ words of assistant text.
  */
-function hasMeaningfulActivity(entries: Entry[]): boolean {
+function hasMeaningfulActivity(entries: SessionEntry[]): boolean {
 	let lastUserIdx = -1;
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const e = entries[i];
-		if (e.type === "message" && e.message?.role === "user") {
+		if (e.type === "message" && e.message.role === "user") {
 			lastUserIdx = i;
 			break;
 		}
@@ -225,7 +218,7 @@ function hasMeaningfulActivity(entries: Entry[]): boolean {
 	let toolCalls = 0;
 	for (const e of tail) {
 		if (e.type !== "message") continue;
-		if (e.message?.role === "assistant") {
+		if (e.message.role === "assistant") {
 			const t = extractText(e.message.content);
 			assistantWords += t.split(/\s+/).filter(Boolean).length;
 			toolCalls += extractToolCalls(e.message.content).length;
@@ -257,7 +250,7 @@ export function selectRecapModel(
 }
 
 async function generateRecap(
-	transcript: string,
+	recapContext: RecapContext,
 	ctx: ExtensionContext,
 	overrideSpec: string | undefined,
 	signal: AbortSignal | undefined,
@@ -270,34 +263,22 @@ async function generateRecap(
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth?.ok) return undefined;
 
-	// Prompt philosophy mirrors Claude Code's away-summary: orient the user in
-	// the high-level task, don't produce a status report — the last assistant
-	// message is already visible in scrollback.
 	const prompt =
-		"The user stepped away from this coding-agent session and is coming back. " +
-		"Write a short recap so they can re-enter flow.\n\n" +
-		"Rules:\n" +
-		"- Write 1-3 short sentences of plain text. No preamble, no markdown, no bullets.\n" +
-		"- Start by stating the high-level task — what the user is building, fixing, or " +
-		"debugging — not implementation minutiae.\n" +
-		"- End with the concrete next step, if there is one.\n" +
-		"- Skip status reports and commit recaps; orient the reader instead.\n" +
-		"- If the last turn was aborted or errored, say so explicitly " +
-		'(e.g. "aborted during X", "errored at Y").\n' +
-		"- Use file/function names where they matter. Max ~400 characters.\n\n" +
-		"<transcript>\n" +
-		transcript.slice(0, TRANSCRIPT_CHAR_CAP) +
-		"\n</transcript>";
+		(recapContext.broaderContext
+			? `Broader session context:\n${recapContext.broaderContext}\n\n`
+			: "") +
+		"The user stepped away and is coming back. Write exactly 1-3 short sentences. " +
+		"Start by stating the high-level task — what they are building or debugging, not " +
+		"implementation details. Next: the concrete next step. Skip status reports and commit recaps.";
 
 	let response;
 	try {
 		response = await completeSimple(
 			model,
 			{
-				// Some providers (notably openai-codex-responses) require a non-empty
-				// top-level instruction string even for simple one-shot completions.
-				systemPrompt: "You write terse, concrete session recaps for a coding agent UI.",
+				systemPrompt: "",
 				messages: [
+					...recapContext.messages,
 					{
 						role: "user",
 						content: [{ type: "text", text: prompt }],
@@ -310,9 +291,6 @@ async function generateRecap(
 				headers: auth.headers,
 				env: auth.env,
 				signal,
-				// Recaps are tiny, throwaway UI hints. Do not pay to create/read prompt
-				// cache entries, and do not spend reasoning tokens. Claude Code's away
-				// summary path likewise disables thinking for this job.
 				cacheRetention: "none",
 				maxTokens: 256,
 			},
@@ -335,7 +313,7 @@ async function generateRecap(
 		.replace(/\s+/g, " ")
 		.trim();
 
-	return text ? text.slice(0, 600) : undefined;
+	return text || undefined;
 }
 
 function showRecap(ctx: ExtensionContext, recap: string) {
@@ -463,16 +441,16 @@ export default function (pi: ExtensionAPI) {
 		!focusEnabled || isFocusDisabled() || !focusEventsSeen;
 
 	const generateAndShow = async (ctx: ExtensionContext, opts: { reason: RecapReason }) => {
-		const entries = ctx.sessionManager.getBranch() as Entry[];
+		const entries = ctx.sessionManager.getBranch();
 		if (!hasMeaningfulActivity(entries) && opts.reason !== "manual") return;
 
-		const transcript = buildTranscript(entries);
-		if (!transcript.trim()) return;
+		const recapContext = buildRecapContext(ctx.sessionManager.buildContextEntries(), entries);
+		if (recapContext.messages.length === 0 && !recapContext.broaderContext) return;
 
 		// Snapshot the exact recap prompt we're summarising BEFORE we await. If
 		// recap-relevant content changes while the model call is in flight, discard
 		// the stale draft; metadata-only leaf changes should not invalidate it.
-		const startStateKey = recapStateKey(transcript);
+		const startStateKey = recapStateKey(recapContext);
 		if (opts.reason !== "manual" && lastDraftedStateKey === startStateKey) return;
 
 		// Take ownership of the active-request slot. Any prior request is
@@ -488,13 +466,16 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", "✦ drafting recap…"));
 
 		try {
-			const recap = await generateRecap(transcript, ctx, modelOverride(), controller.signal);
+			const recap = await generateRecap(recapContext, ctx, modelOverride(), controller.signal);
 			if (!recap || controller.signal.aborted) return;
 			// Discard the recap if the recap prompt changed while we were drafting.
 			// If only session metadata changed, the prompt key stays the same and the
 			// draft remains valid.
-			const currentTranscript = buildTranscript(ctx.sessionManager.getBranch() as Entry[]);
-			if (recapStateKey(currentTranscript) !== startStateKey) return;
+			const currentContext = buildRecapContext(
+				ctx.sessionManager.buildContextEntries(),
+				ctx.sessionManager.getBranch(),
+			);
+			if (recapStateKey(currentContext) !== startStateKey) return;
 
 			// Stamp the prompt we actually summarised, not the live branch leaf.
 			lastDraftedStateKey = startStateKey;

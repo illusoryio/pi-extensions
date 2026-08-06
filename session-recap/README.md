@@ -42,8 +42,8 @@ The recap reuses the active provider's authentication and chooses a cheaper mode
 
 Custom providers registered through `pi.registerProvider` work when they use one of pi-ai's built-in API types. Providers that register a custom API handler only inside Pi's runtime are skipped silently because pi-ai's standalone compatibility layer cannot route the recap call; use `--recap-model` to select a supported provider if you still want recaps in those sessions.
 
-- No tools or Agent Skills are loaded into the recap call — only a compact two-tier transcript is sent (recent activity in detail, plus your earlier prompts and any compaction summary for task framing), capped at ~12k chars.
-- Reasoning/thinking is disabled for the recap call.
+- No tools or Agent Skills are loaded into the recap call. It receives a 30-message recent window in native roles, expanded only to keep tool calls with their results, plus the initial request and latest compaction or branch summary for broader context. Long initial requests keep their first and last 4,000 characters; long tool results keep their first and last 2,000.
+- No reasoning/thinking level is requested for the recap call.
 - Prompt cache writes/reads are disabled with `cacheRetention: "none"`.
 - Output is capped with `maxTokens: 256`.
 - No active model, failed auth resolution, or an unsupported custom API handler → the recap is skipped silently.
@@ -102,7 +102,7 @@ Filter to just this extension in `~/.pi/agent/settings.json`:
 
 ## Behaviour notes
 
-- **Uses `turn_end`, not `agent_end`**, to arm triggers, so a turn that errors or is aborted still gets recapped — and the prompt asks the model to say so explicitly.
+- **Uses `turn_end`, not `agent_end`**, to arm triggers, so a turn that errors or is aborted can still be recapped.
 - **No duplicate drafts**: the last-drafted recap prompt is fingerprinted; blur/refocus churn or session metadata-only changes reuse the recap rather than regenerating.
 - **Defers during active work by default**: if a trigger fires while a turn is still loading, the draft waits for the agent to finish, matching Claude Code's away-summary pending behaviour. Use `--recap-during-active` to allow mid-flight recaps.
 - **Aborts on new input**: any in-flight recap request is cancelled when you start typing or a new turn begins.
