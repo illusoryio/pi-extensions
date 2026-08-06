@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Let Pi wrap recap text at the terminal width instead of inserting breaks at 100 characters.
+
 ## [0.2.2] - 2026-07-21
 
 ### Fixed

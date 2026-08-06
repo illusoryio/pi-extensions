@@ -1,6 +1,5 @@
 # session-recap — design & plan
 
-> Status: **v0.2.1 — away-recap redesign + metadata-stable dedupe**  ·  Lives in `tmustier/pi-extensions/session-recap/`
 > v0.1 guessed at Claude Code's recap design; v0.2 is informed by the actual
 > implementation from the leaked Claude Code source (`tmustier/cc-inv`,
 > 2026-03-31): `src/services/awaySummary.ts` + `src/hooks/useAwaySummary.ts`.
@@ -61,7 +60,7 @@ mid-flight drafts.
 ## Display
 
 - `ctx.ui.setWidget("session-recap", [...], { placement: "aboveEditor" })`
-- Accent-bold `✦ recap` header + up to 4 dim wrapped lines (~100 cols).
+- Accent-bold `✦ recap` header + a dim body that the TUI reflows to the current terminal width.
 - Cleared on: user input, new turn start, session reload, session shutdown.
 - **No session persistence.** CC appends a transcript message instead; for pi
   a widget is idiomatic and avoids polluting the session file.
@@ -135,8 +134,7 @@ Rules:
 </transcript>
 ```
 
-Post-processing: whitespace collapsed to single spaces, capped at 600 chars,
-soft-wrapped into ≤4 widget lines.
+Post-processing: whitespace is collapsed to single spaces and capped at 600 characters.
 
 ## Edge cases
 
@@ -177,5 +175,3 @@ soft-wrapped into ≤4 widget lines.
 - [ ] Consider a provider-aware cheap-model default (e.g. Haiku when the
       active provider is Anthropic) once pi exposes a reliable "sibling small
       model" lookup.
-- [ ] Revisit widget wrap width — read the real terminal width from the TUI
-      instead of assuming ~100 cols.

@@ -91,10 +91,6 @@ const COMPACTION_SUMMARY_CHARS = 600;
 // not spend another recap call.
 const TRANSCRIPT_CHAR_CAP = 12000;
 
-// Widget body wrapping.
-const WRAP_WIDTH = 100;
-const MAX_BODY_LINES = 4;
-
 // DECSET 1004 focus reporting — https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
 const FOCUS_ENABLE = "\x1b[?1004h";
 const FOCUS_DISABLE = "\x1b[?1004l";
@@ -243,27 +239,6 @@ function hasMeaningfulActivity(entries: Entry[]): boolean {
 	return toolCalls > 0 || assistantWords >= 30;
 }
 
-function wrapText(text: string, width: number, maxLines: number): string[] {
-	const words = text.split(/\s+/).filter(Boolean);
-	const lines: string[] = [];
-	let cur = "";
-	for (const w of words) {
-		if (cur && cur.length + 1 + w.length > width) {
-			lines.push(cur);
-			cur = w;
-		} else {
-			cur = cur ? `${cur} ${w}` : w;
-		}
-	}
-	if (cur) lines.push(cur);
-	if (lines.length > maxLines) {
-		const kept = lines.slice(0, maxLines);
-		kept[maxLines - 1] += " …";
-		return kept;
-	}
-	return lines;
-}
-
 async function generateRecap(
 	transcript: string,
 	ctx: ExtensionContext,
@@ -361,8 +336,7 @@ function showRecap(ctx: ExtensionContext, recap: string) {
 	if (!ctx.hasUI) return;
 	const theme = ctx.ui.theme;
 	const header = theme.fg("accent", theme.bold("✦ recap"));
-	const body = wrapText(recap, WRAP_WIDTH, MAX_BODY_LINES).map((l) => theme.fg("dim", l));
-	ctx.ui.setWidget(WIDGET_KEY, [header, ...body], { placement: "aboveEditor" });
+	ctx.ui.setWidget(WIDGET_KEY, [header, theme.fg("dim", recap)], { placement: "aboveEditor" });
 }
 
 function clearRecap(ctx: ExtensionContext) {
