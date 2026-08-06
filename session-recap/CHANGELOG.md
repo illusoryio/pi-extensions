@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.4.0] - 2026-08-06
 
 ### Changed
 - Replace the flattened 12,000-character transcript with a 30-message native conversation window, the initial request, and the latest compaction or branch summary. Long initial requests and tool results retain their beginning and end.
