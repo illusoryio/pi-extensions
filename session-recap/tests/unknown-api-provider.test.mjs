@@ -38,6 +38,9 @@ const ctx = {
 		maxTokens: 4096,
 	},
 	modelRegistry: {
+		getAvailable() {
+			return [];
+		},
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unused" }),
 	},
 	sessionManager: {

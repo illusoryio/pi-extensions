@@ -27,10 +27,9 @@
  * Skip status reports — the last assistant message is already on screen; what
  * the user has lost is the task thread.
  *
- * Model: defaults to the user's currently active model with reasoning/thinking
- * disabled and cache writes disabled. This piggybacks on the user's configured
- * auth. Custom providers using a built-in pi-ai API work normally; providers
- * with a custom API handler are skipped silently. Override explicitly with
+ * Model: uses Claude Haiku 4.5 for Anthropic sessions, or GPT-5.6 Luna when
+ * the active model is GPT and its provider offers Luna. Otherwise it keeps
+ * the active model. Reasoning and cache writes are disabled. Override with
  * `--recap-model "<provider>/<id>"`.
  *
  * Flags:
@@ -39,14 +38,14 @@
  *   --recap-disable-focus      Disable DECSET ?1004 focus reporting
  *   --recap-during-active      Allow away recaps while an agent turn is running
  *   --recap-disable            Disable the automatic recap entirely
- *   --recap-model <p/id>       Override the default (active) model
+ *   --recap-model <p/id>       Override automatic model selection
  *
  * Command:
  *   /recap                     Force-generate a recap right now
  */
 
 import { createHash } from "node:crypto";
-import { completeSimple, getModel } from "@earendil-works/pi-ai/compat";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type ContentBlock = {
@@ -76,6 +75,9 @@ const STATUS_KEY = "session-recap";
 
 const DEFAULT_AWAY_SECONDS = 90;
 const DEFAULT_IDLE_SECONDS = 120;
+const ANTHROPIC_RECAP_MODEL = "claude-haiku-4-5";
+const GPT_MODEL_ID = /(?:^|\/)gpt-/;
+const LUNA_RECAP_MODEL = /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/;
 
 // Debounce after a turn ends while blurred, so mid-loop turn_ends (which are
 // immediately followed by the next turn_start) don't trigger drafts.
@@ -98,12 +100,6 @@ const FOCUS_IN_SEQ = "\x1b[I";
 const FOCUS_OUT_SEQ = "\x1b[O";
 
 // --- helpers -----------------------------------------------------------------
-
-function splitModel(spec: string): { provider: string; id: string } | undefined {
-	const idx = spec.indexOf("/");
-	if (idx <= 0) return undefined;
-	return { provider: spec.slice(0, idx), id: spec.slice(idx + 1) };
-}
 
 function extractText(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -137,10 +133,9 @@ function extractToolCalls(content: unknown): string[] {
  *   Tier 1 — task framing (cheap): the most recent compaction/branch summary
  *   if present, plus the last few *user* prompts before the latest one,
  *   trimmed hard. This is what lets the model state the high-level task
- *   instead of parroting the last tool call. (Claude Code feeds the last 30
- *   raw messages to Haiku for this; we're on the active model, so we keep the
- *   framing to user prompts only — old tool results add cost, not
- *   orientation.)
+ *   instead of parroting the last tool call. Claude Code feeds the last 30
+ *   raw messages to Haiku; user prompts preserve the framing without paying
+ *   for old tool results.
  *
  *   Tier 2 — recent detail: everything since the last user message, with the
  *   same per-item trimming as before (assistant text, tool calls, results).
@@ -239,24 +234,35 @@ function hasMeaningfulActivity(entries: Entry[]): boolean {
 	return toolCalls > 0 || assistantWords >= 30;
 }
 
+export function selectRecapModel(
+	activeModel: Model | undefined,
+	overrideSpec: string | undefined,
+	registry: Pick<ExtensionContext["modelRegistry"], "find" | "getAvailable">,
+): Model | undefined {
+	if (overrideSpec) {
+		const slash = overrideSpec.indexOf("/");
+		if (slash <= 0) return activeModel;
+		return registry.find(overrideSpec.slice(0, slash), overrideSpec.slice(slash + 1)) ?? activeModel;
+	}
+	if (!activeModel) return undefined;
+
+	const available = registry
+		.getAvailable()
+		.filter((model) => model.provider === activeModel.provider);
+	if (activeModel.provider === "anthropic") {
+		return available.find((model) => model.id === ANTHROPIC_RECAP_MODEL) ?? activeModel;
+	}
+	if (!GPT_MODEL_ID.test(activeModel.id)) return activeModel;
+	return available.find((model) => LUNA_RECAP_MODEL.test(model.id)) ?? activeModel;
+}
+
 async function generateRecap(
 	transcript: string,
 	ctx: ExtensionContext,
 	overrideSpec: string | undefined,
 	signal: AbortSignal | undefined,
 ): Promise<string | undefined> {
-	// Prefer explicit override flag; otherwise use the active model.
-	let model: Model | undefined = ctx.model;
-	if (overrideSpec) {
-		const parsed = splitModel(overrideSpec);
-		if (parsed) {
-			const found = (getModel as (provider: string, id: string) => Model | undefined)(
-				parsed.provider,
-				parsed.id,
-			);
-			if (found) model = found;
-		}
-	}
+	const model = selectRecapModel(ctx.model, overrideSpec, ctx.modelRegistry);
 	if (!model) return undefined;
 
 	// Note: apiKey may legitimately be absent for env/ambient-auth providers —
@@ -375,7 +381,7 @@ export default function (pi: ExtensionAPI) {
 		default: false,
 	});
 	pi.registerFlag("recap-model", {
-		description: "Override the default (active) model, e.g. anthropic/claude-sonnet-4-6",
+		description: "Override automatic model selection, e.g. anthropic/claude-sonnet-4-6",
 		type: "string",
 		default: "",
 	});
