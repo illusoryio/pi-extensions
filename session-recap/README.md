@@ -33,7 +33,14 @@ If focus events cause any weirdness in your terminal, run with `--recap-disable-
 
 ## Model
 
-Defaults to the **currently active model** in your Pi session, but with recap-specific low-cost settings. This piggybacks on the auth you already have configured, so there are no extra login prompts. Custom providers registered through `pi.registerProvider` work when they use one of pi-ai's built-in API types. Providers that register a custom API handler only inside Pi's runtime are skipped silently because pi-ai's standalone compatibility layer cannot route the recap call; use `--recap-model` to select a supported provider if you still want recaps in those sessions.
+The recap reuses the active provider's authentication and chooses a cheaper model when available:
+
+1. `--recap-model` when set.
+2. `anthropic/claude-haiku-4-5` for Anthropic sessions.
+3. GPT-5.6 Luna when the active model is GPT and its provider offers Luna.
+4. The currently active model otherwise.
+
+Custom providers registered through `pi.registerProvider` work when they use one of pi-ai's built-in API types. Providers that register a custom API handler only inside Pi's runtime are skipped silently because pi-ai's standalone compatibility layer cannot route the recap call; use `--recap-model` to select a supported provider if you still want recaps in those sessions.
 
 - No tools or Agent Skills are loaded into the recap call — only a compact two-tier transcript is sent (recent activity in detail, plus your earlier prompts and any compaction summary for task framing), capped at ~12k chars.
 - Reasoning/thinking is disabled for the recap call.
@@ -83,7 +90,7 @@ Filter to just this extension in `~/.pi/agent/settings.json`:
 | `--recap-disable-focus` | `false` | Disable DECSET `?1004` focus reporting. Idle fallback still runs. |
 | `--recap-during-active` | `false` | Allow away recaps while an agent turn is still running, instead of deferring to the end of the turn. |
 | `--recap-disable` | `false` | Disable the automatic recap entirely. `/recap` still works. |
-| `--recap-model "<p/id>"` | (active model) | Override the default, e.g. `anthropic/claude-sonnet-4-6`. |
+| `--recap-model "<p/id>"` | automatic | Override model selection, e.g. `anthropic/claude-sonnet-4-6`. |
 
 > v0.1's `--recap-focus-min-seconds` was removed: recaps are no longer drafted on every focus-out, so there is no quick-glance suppression to tune.
 

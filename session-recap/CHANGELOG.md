@@ -5,6 +5,9 @@
 ### Fixed
 - Let Pi wrap recap text at the terminal width instead of inserting breaks at 100 characters.
 
+### Changed
+- Prefer Claude Haiku 4.5 for Anthropic sessions, or GPT-5.6 Luna when the active model is GPT and its provider offers Luna. Fall back to the active model; `--recap-model` still takes precedence.
+
 ## [0.2.2] - 2026-07-21
 
 ### Fixed

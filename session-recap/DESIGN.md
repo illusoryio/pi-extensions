@@ -25,8 +25,8 @@ line 142.
 | Trigger | Blur → 5-min timer → generate while still away. Refocus cancels timer + in-flight. Timer fires mid-turn → pending bit, generate at turn end if still blurred. | Same shape, but 90s default + an extra trigger: turn ends while blurred (debounced 3s). Multi-tab agent workflows context-switch faster than CC's 5 min assumes. |
 | Idle fallback | None — focus state `unknown` (no DECSET 1004) = feature off. | Kept, but only armed when the terminal has *not* demonstrated focus support (no `ESC[I`/`ESC[O` seen this session). |
 | Output | Persistent dim `※` transcript system message (`away_summary` subtype), excluded from API context. | Transient widget above the editor (pi-idiomatic, non-polluting), cleared on next input. |
-| Model | `getSmallFastModel()` — Haiku or `ANTHROPIC_SMALL_FAST_MODEL`. Never the active model. | Active model (no auth surprises across custom providers) + `--recap-model` override. See trade-off below. |
-| Context | Last **30 raw messages** + session memory, instruction appended as a user message, `skipCacheWrite: true`. | Two-tier compact text transcript (~12k char cap). 30 raw messages is only affordable at Haiku pricing; on the active model it could be 30–80k tokens per throwaway hint. |
+| Model | `getSmallFastModel()` — Haiku or `ANTHROPIC_SMALL_FAST_MODEL`. Never the active model. | Anthropic Haiku 4.5, or GPT-5.6 Luna when the active model is GPT and its provider offers Luna; otherwise the active model. `--recap-model` overrides this. |
+| Context | Last **30 raw messages** + session memory, instruction appended as a user message, `skipCacheWrite: true`. | Two-tier compact text transcript (~12k char cap) to avoid paying for old assistant text and tool results that add little orientation. |
 | Prompt | "Write exactly 1-3 short sentences. Start by stating the high-level task — what they are building or debugging, not implementation details. Next: the concrete next step. **Skip status reports and commit recaps.**" | Adopted near-verbatim. This was v0.1's biggest miss — our old prompt asked for a status report, which is exactly what CC bans. |
 | Dedupe | Max one summary per user turn (`hasSummarySinceLastUserTurn`). | Recap-prompt fingerprinting (same prompt = no new model call, even if Pi appends metadata entries). |
 | In-flight abort on refocus | Yes — summary appended to transcript late would be weird. | No — a widget landing moments after return is exactly when it helps. |
@@ -65,28 +65,25 @@ mid-flight drafts.
 - **No session persistence.** CC appends a transcript message instead; for pi
   a widget is idiomatic and avoids polluting the session file.
 
-## Model selection — decision (unchanged from v0.1)
+## Model selection
 
-Default must not surprise users with auth/login issues.
+Selection order:
 
-**Decision:** default to the **currently active model**, invoked as a tiny
-throwaway completion: no tools, reasoning disabled, `cacheRetention: "none"`,
-`maxTokens: 256`. Any OAuth / env-var / custom-provider credential the user
-already has just works. No active model / failed auth resolution → skip
-silently.
+1. Explicit `--recap-model "<provider>/<id>"` override.
+2. `anthropic/claude-haiku-4-5` when Anthropic is the active provider.
+3. GPT-5.6 Luna when the active model is GPT and its provider offers Luna.
+4. The active model.
 
-- CC uses Haiku here. We deliberately diverge: pi sessions run against
-  arbitrary providers and there is no universally-available cheap model we can
-  assume auth for. The cost envelope is protected by the transcript cap
-  (~3k input tokens) rather than by the model choice.
-- `apiKey` may legitimately be absent when `ok: true` (env/ambient-auth
-  providers such as Bedrock) — only bail when auth resolution itself fails,
-  and pass `env` through to `completeSimple`.
-- Escape hatch: `--recap-model "<provider>/<id>"`.
+Haiku is deliberately Anthropic-only. Luna is limited to GPT sessions and stays
+on the active provider. Automatic choices use only available models.
+Calls use no tools or reasoning, `cacheRetention: "none"`, and `maxTokens: 256`.
+No model or failed auth resolution skips the recap silently.
 
-> **Import note:** as of pi 0.80.x, `completeSimple`/`getModel` live in
-> `@earendil-works/pi-ai/compat` — the root export dropped them, which
-> silently broke v0.1.3 at runtime.
+`apiKey` may legitimately be absent when auth succeeds for env or ambient-auth
+providers. The resolved headers and environment are passed to `completeSimple`.
+
+> **Import note:** as of pi 0.80.x, `completeSimple` lives in
+> `@earendil-works/pi-ai/compat`; the root export dropped it.
 
 ## Context fed to the model — two-tier transcript
 
@@ -165,13 +162,9 @@ Post-processing: whitespace is collapsed to single spaces and capped at 600 char
 - Session persistence of recap history (CC does persist; see Display).
 - Multi-recap / rolling summary across many focus cycles.
 - Recap UI beyond the widget (no modal, no notifications).
-- Matching CC's small-fast-model choice (see Model selection).
 
 ## Follow-ups (v0.3+)
 
 - [ ] Optional e2e harness driving fake focus sequences + `turn_end` events
       and asserting widget state transitions (manual tmux testing works but is
       tedious).
-- [ ] Consider a provider-aware cheap-model default (e.g. Haiku when the
-      active provider is Anthropic) once pi exposes a reliable "sibling small
-      model" lookup.
