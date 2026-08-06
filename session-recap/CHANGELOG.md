@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.4.1] - 2026-08-06
 
 ### Changed
 - Simplified the extension implementation and documentation without changing recap behaviour.
