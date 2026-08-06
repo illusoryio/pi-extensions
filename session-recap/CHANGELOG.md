@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Simplified the extension implementation and documentation without changing recap behaviour.
+
 ## [0.4.0] - 2026-08-06
 
 ### Changed
@@ -29,7 +34,7 @@ Thanks to @timvdhoorn for reporting and fixing the custom-provider failure ([#81
 
 ## [0.2.0] - 2026-07-04
 
-Away-recap redesign informed by Claude Code's actual away-summary implementation (from the leaked source in `tmustier/cc-inv`: `services/awaySummary.ts` + `hooks/useAwaySummary.ts`). See DESIGN.md for the full comparison.
+Away-recap redesign informed by Claude Code's away-summary implementation.
 
 ### Fixed
 - **Restore recap generation on pi 0.80.x**: import `completeSimple`/`getModel` from `@earendil-works/pi-ai/compat` — the root export dropped them, which silently broke v0.1.3 at runtime.

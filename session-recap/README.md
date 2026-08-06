@@ -16,7 +16,7 @@ The recap orients rather than reports: it states the high-level task first (what
 
 Also fires automatically on `/resume` and `/fork` so you know where the prior session left off.
 
-Clears cleanly on: next user input, new turn start, session reload, or session shutdown.
+The widget clears when you type or new agent work begins.
 
 Quick alt-tabs cost nothing: no model call is made until you've actually been away for the full threshold. If you return while a recap is still drafting, it's allowed to finish — it lands moments after you're back, which is exactly when it helps.
 
@@ -40,15 +40,9 @@ The recap reuses the active provider's authentication and chooses a cheaper mode
 3. GPT-5.6 Luna when the active model is GPT and its provider offers Luna.
 4. The currently active model otherwise.
 
-Custom providers registered through `pi.registerProvider` work when they use one of pi-ai's built-in API types. Providers that register a custom API handler only inside Pi's runtime are skipped silently because pi-ai's standalone compatibility layer cannot route the recap call; use `--recap-model` to select a supported provider if you still want recaps in those sessions.
+The recap sends no tools or Agent Skills. It uses a 30-message window in native roles, plus the initial request and latest compaction or branch summary. Large initial requests and tool results retain their beginning and end.
 
-- No tools or Agent Skills are loaded into the recap call. It receives a 30-message recent window in native roles, expanded only to keep tool calls with their results, plus the initial request and latest compaction or branch summary for broader context. Long initial requests keep their first and last 4,000 characters; long tool results keep their first and last 2,000.
-- No reasoning/thinking level is requested for the recap call.
-- Prompt cache writes/reads are disabled with `cacheRetention: "none"`.
-- Output is capped with `maxTokens: 256`.
-- No active model, failed auth resolution, or an unsupported custom API handler → the recap is skipped silently.
-
-Override with `--recap-model "<provider>/<id>"` if you want a specific model regardless of the session's active one.
+Custom providers work when they use a built-in pi-ai API type. Pi-only custom handlers are skipped because the standalone compatibility layer cannot route them; use `--recap-model "<provider>/<id>"` to select a supported model.
 
 ## Install
 
@@ -92,25 +86,11 @@ Filter to just this extension in `~/.pi/agent/settings.json`:
 | `--recap-disable` | `false` | Disable the automatic recap entirely. `/recap` still works. |
 | `--recap-model "<p/id>"` | automatic | Override model selection, e.g. `anthropic/claude-sonnet-4-6`. |
 
-> v0.1's `--recap-focus-min-seconds` was removed: recaps are no longer drafted on every focus-out, so there is no quick-glance suppression to tune.
-
 ## Command
 
 | Command | Description |
 |---|---|
 | `/recap` | Force-generate a recap right now, bypassing the activity gate. |
-
-## Behaviour notes
-
-- **Uses `turn_end`, not `agent_end`**, to arm triggers, so a turn that errors or is aborted can still be recapped.
-- **No duplicate drafts**: the last-drafted recap prompt is fingerprinted; blur/refocus churn or session metadata-only changes reuse the recap rather than regenerating.
-- **Defers during active work by default**: if a trigger fires while a turn is still loading, the draft waits for the agent to finish, matching Claude Code's away-summary pending behaviour. Use `--recap-during-active` to allow mid-flight recaps.
-- **Aborts on new input**: any in-flight recap request is cancelled when you start typing or a new turn begins.
-- **No session persistence**: the recap lives only in the widget for the active session — nothing is stored.
-
-## Design
-
-See [DESIGN.md](./DESIGN.md) for the design-of-record, including a comparison with Claude Code's actual away-summary implementation.
 
 ## License
 
