@@ -4,7 +4,7 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { complete, completeSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	sessionEntryToContextMessages,
@@ -188,32 +188,37 @@ async function generateRecap(
 		"Start by stating the high-level task — what they are building or debugging, not " +
 		"implementation details. Next: the concrete next step. Skip status reports and commit recaps.";
 
+	const context = {
+		systemPrompt: "",
+		messages: [
+			...recapContext.messages,
+			{
+				role: "user" as const,
+				content: [{ type: "text" as const, text: prompt }],
+				timestamp: Date.now(),
+			},
+		],
+	};
+	const options = {
+		apiKey: auth.apiKey,
+		headers: auth.headers,
+		env: auth.env,
+		signal,
+		cacheRetention: "none" as const,
+		maxTokens: 256,
+	};
+
 	let response;
 	try {
-		response = await completeSimple(
-			model,
-			{
-				systemPrompt: "",
-				messages: [
-					...recapContext.messages,
-					{
-						role: "user",
-						content: [{ type: "text", text: prompt }],
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				env: auth.env,
-				signal,
-				cacheRetention: "none",
-				maxTokens: 256,
-			},
-		);
+		// Recaps never need thinking. Omitting `reasoning` disables it everywhere except
+		// Codex, which then falls back to the server default; only `complete` can pass
+		// the explicit "none" that turns it off.
+		response =
+			model.api === "openai-codex-responses"
+				? await complete(model, context, { ...options, reasoningEffort: "none" })
+				: await completeSimple(model, context, options);
 	} catch (err) {
-		// completeSimple cannot route custom handlers registered only inside Pi.
+		// The standalone compat layer cannot route custom handlers registered only inside Pi.
 		if (err instanceof Error && err.message.startsWith("No API provider registered for api:")) {
 			return undefined;
 		}

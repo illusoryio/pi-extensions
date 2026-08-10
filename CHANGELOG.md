@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.65] - 2026-08-10
+
+### Fixed
+- `session-recap` 0.4.2: force reasoning off for Codex recap models, which were inheriting the server-side default effort because `completeSimple` has no way to request "off". Other APIs already disable thinking when no level is requested.
+
 ## [0.1.61] - 2026-07-22
 
 ### Changed
