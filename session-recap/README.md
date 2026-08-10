@@ -40,7 +40,9 @@ The recap reuses the active provider's authentication and chooses a cheaper mode
 3. GPT-5.6 Luna when the active model is GPT and its provider offers Luna.
 4. The currently active model otherwise.
 
-The recap sends no tools or Agent Skills. It uses a 30-message window in native roles, plus the initial request and latest compaction or branch summary. Large initial requests and tool results retain their beginning and end.
+The recap sends no system prompt, no tools and no Agent Skills, and never writes to the prompt cache. Reasoning is always off: most APIs disable thinking when no reasoning level is requested, and Codex models are sent an explicit `reasoningEffort: "none"` because they would otherwise fall back to the server-side default.
+
+It uses a 30-message window in native roles, plus the initial request and latest compaction or branch summary. Large initial requests and tool results retain their beginning and end.
 
 Custom providers work when they use a built-in pi-ai API type. Pi-only custom handlers are skipped because the standalone compatibility layer cannot route them; use `--recap-model "<provider>/<id>"` to select a supported model.
 

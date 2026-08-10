@@ -4,7 +4,7 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { complete, completeSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	sessionEntryToContextMessages,
@@ -33,6 +33,13 @@ const LUNA_RECAP_MODEL = /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/;
 // Debounce after a turn ends while blurred, so mid-loop turn_ends (which are
 // immediately followed by the next turn_start) don't trigger drafts.
 const POST_TURN_DEBOUNCE_MS = 3000;
+
+// `completeSimple` cannot express "reasoning off": its `reasoning` option only
+// accepts real thinking levels. Omitting it disables thinking on every API we
+// use except openai-codex-responses, which sends no reasoning field at all and
+// so inherits the server-side default. Those models go through `complete` with
+// an explicit `reasoningEffort: "none"` instead.
+const NEEDS_EXPLICIT_REASONING_OFF = new Set(["openai-codex-responses"]);
 
 const RECENT_MESSAGE_WINDOW = 30;
 const MIN_ASSISTANT_WORDS = 30;
@@ -188,30 +195,32 @@ async function generateRecap(
 		"Start by stating the high-level task — what they are building or debugging, not " +
 		"implementation details. Next: the concrete next step. Skip status reports and commit recaps.";
 
+	const context = {
+		systemPrompt: "",
+		messages: [
+			...recapContext.messages,
+			{
+				role: "user" as const,
+				content: [{ type: "text" as const, text: prompt }],
+				timestamp: Date.now(),
+			},
+		],
+	};
+	const options = {
+		apiKey: auth.apiKey,
+		headers: auth.headers,
+		env: auth.env,
+		signal,
+		cacheRetention: "none" as const,
+		maxTokens: 256,
+	};
+
 	let response;
 	try {
-		response = await completeSimple(
-			model,
-			{
-				systemPrompt: "",
-				messages: [
-					...recapContext.messages,
-					{
-						role: "user",
-						content: [{ type: "text", text: prompt }],
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				env: auth.env,
-				signal,
-				cacheRetention: "none",
-				maxTokens: 256,
-			},
-		);
+		// Recaps never need reasoning; skipping it keeps each away-timer fire cheap.
+		response = NEEDS_EXPLICIT_REASONING_OFF.has(model.api)
+			? await complete(model, context, { ...options, reasoningEffort: "none" })
+			: await completeSimple(model, context, options);
 	} catch (err) {
 		// completeSimple cannot route custom handlers registered only inside Pi.
 		if (err instanceof Error && err.message.startsWith("No API provider registered for api:")) {
