@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.65] - 2026-08-10
+
+### Fixed
+- `session-recap` 0.4.2: force reasoning off for Codex recap models. `completeSimple` cannot express "off", and openai-codex-responses sends no reasoning field when none is requested, so recaps inherited the server-side default effort. Those models now go through `complete` with an explicit `reasoningEffort: "none"`; every other API keeps disabling thinking by omission.
+
 ## [0.1.61] - 2026-07-22
 
 ### Changed
