@@ -235,6 +235,21 @@ async function generateRecap(
 	return text || undefined;
 }
 
+/** A single pending timeout. Scheduling replaces any timeout already pending. */
+function createTimer() {
+	let handle: NodeJS.Timeout | undefined;
+	return {
+		schedule(ms: number, fn: () => void) {
+			clearTimeout(handle);
+			handle = setTimeout(fn, ms);
+		},
+		clear() {
+			clearTimeout(handle);
+			handle = undefined;
+		},
+	};
+}
+
 function clearRecap(ctx: ExtensionContext) {
 	if (!ctx.hasUI) return;
 	ctx.ui.setWidget(RECAP_KEY, undefined);
@@ -274,9 +289,9 @@ export default function (pi: ExtensionAPI) {
 		default: "",
 	});
 
-	let idleTimer: NodeJS.Timeout | undefined;
-	let awayTimer: NodeJS.Timeout | undefined;
-	let postTurnTimer: NodeJS.Timeout | undefined;
+	const idleTimer = createTimer();
+	const awayTimer = createTimer();
+	const postTurnTimer = createTimer();
 	let activeController: AbortController | undefined;
 	let agentActive = false;
 	let awayRecapPending = false;
@@ -291,25 +306,6 @@ export default function (pi: ExtensionAPI) {
 		return Math.max(5, Number.isFinite(seconds) ? seconds : fallback) * 1000;
 	};
 	const isDisabled = (): boolean => Boolean(pi.getFlag("recap-disable"));
-
-	const clearIdleTimer = () => {
-		if (idleTimer) {
-			clearTimeout(idleTimer);
-			idleTimer = undefined;
-		}
-	};
-	const clearAwayTimer = () => {
-		if (awayTimer) {
-			clearTimeout(awayTimer);
-			awayTimer = undefined;
-		}
-	};
-	const clearPostTurnTimer = () => {
-		if (postTurnTimer) {
-			clearTimeout(postTurnTimer);
-			postTurnTimer = undefined;
-		}
-	};
 
 	const cancelActive = () => {
 		activeController?.abort();
@@ -345,8 +341,8 @@ export default function (pi: ExtensionAPI) {
 			if (JSON.stringify(currentContext) !== startContext) return;
 
 			lastDraftedContext = startContext;
-			clearIdleTimer();
-			clearPostTurnTimer();
+			idleTimer.clear();
+			postTurnTimer.clear();
 
 			const theme = ctx.ui.theme;
 			const header = theme.fg("accent", theme.bold("✦ recap"));
@@ -373,22 +369,20 @@ export default function (pi: ExtensionAPI) {
 	const handleFocusOut = (ctx: ExtensionContext) => {
 		focusEventsSeen = true;
 		isBlurred = true;
-		clearIdleTimer();
+		idleTimer.clear();
 		if (isDisabled()) return;
-		clearAwayTimer();
-		awayTimer = setTimeout(() => {
-			awayTimer = undefined;
-			tryAwayRecap(ctx);
-		}, flagMilliseconds("recap-away-seconds", DEFAULT_AWAY_SECONDS));
+		awayTimer.schedule(flagMilliseconds("recap-away-seconds", DEFAULT_AWAY_SECONDS), () =>
+			tryAwayRecap(ctx),
+		);
 	};
 
 	const handleFocusIn = () => {
 		focusEventsSeen = true;
 		isBlurred = false;
 		awayRecapPending = false;
-		clearAwayTimer();
-		clearPostTurnTimer();
-		clearIdleTimer();
+		awayTimer.clear();
+		postTurnTimer.clear();
+		idleTimer.clear();
 		// Leave an in-flight recap to land as the user returns.
 	};
 
@@ -396,11 +390,7 @@ export default function (pi: ExtensionAPI) {
 		if (focusEnabled || pi.getFlag("recap-disable-focus") || !ctx.hasUI) return;
 		if (!process.stdout.isTTY || !process.stdin.isTTY) return;
 
-		try {
-			process.stdout.write(FOCUS_ENABLE);
-		} catch {
-			return;
-		}
+		process.stdout.write(FOCUS_ENABLE);
 
 		// Focus sequences may straddle input chunks, so retain the unmatched tail.
 		const MAX_SEQ = Math.max(FOCUS_IN_SEQ.length, FOCUS_OUT_SEQ.length);
@@ -432,9 +422,7 @@ export default function (pi: ExtensionAPI) {
 			focusListener = undefined;
 		}
 		if (focusEnabled) {
-			try {
-				process.stdout.write(FOCUS_DISABLE);
-			} catch {}
+			process.stdout.write(FOCUS_DISABLE);
 			focusEnabled = false;
 		}
 		isBlurred = false;
@@ -445,33 +433,25 @@ export default function (pi: ExtensionAPI) {
 		if (isDisabled() || !ctx.hasUI) return;
 
 		// Debounce mid-loop turn_end → turn_start pairs.
-		if (isBlurred) {
-			clearPostTurnTimer();
-			postTurnTimer = setTimeout(() => {
-				postTurnTimer = undefined;
-				tryAwayRecap(ctx);
-			}, POST_TURN_DEBOUNCE_MS);
-		}
+		if (isBlurred) postTurnTimer.schedule(POST_TURN_DEBOUNCE_MS, () => tryAwayRecap(ctx));
 
 		if (!focusEventsSeen) {
-			clearIdleTimer();
-			idleTimer = setTimeout(() => {
-				idleTimer = undefined;
+			idleTimer.schedule(flagMilliseconds("recap-idle-seconds", DEFAULT_IDLE_SECONDS), () => {
 				if (!focusEventsSeen) void generateAndShow(ctx, "idle");
-			}, flagMilliseconds("recap-idle-seconds", DEFAULT_IDLE_SECONDS));
+			});
 		}
 	});
 
 	pi.on("turn_start", () => {
-		clearIdleTimer();
-		clearPostTurnTimer();
+		idleTimer.clear();
+		postTurnTimer.clear();
 		cancelActive();
 	});
 
 	pi.on("input", (_event, ctx) => {
-		clearIdleTimer();
-		clearPostTurnTimer();
-		clearAwayTimer();
+		idleTimer.clear();
+		postTurnTimer.clear();
+		awayTimer.clear();
 		cancelActive();
 		awayRecapPending = false;
 		clearRecap(ctx);
@@ -479,8 +459,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", (_event, ctx) => {
 		agentActive = true;
-		clearIdleTimer();
-		clearPostTurnTimer();
+		idleTimer.clear();
+		postTurnTimer.clear();
 		cancelActive();
 		clearRecap(ctx);
 	});
@@ -496,9 +476,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		agentActive = false;
 		awayRecapPending = false;
-		clearIdleTimer();
-		clearAwayTimer();
-		clearPostTurnTimer();
+		idleTimer.clear();
+		awayTimer.clear();
+		postTurnTimer.clear();
 		cancelActive();
 		detachFocusReporting();
 	});
