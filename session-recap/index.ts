@@ -12,6 +12,7 @@ import {
 	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { Container, Text, type Component, type TUI } from "@earendil-works/pi-tui";
 
 type Model = Parameters<typeof completeSimple>[0];
 
@@ -245,6 +246,47 @@ function clearRecap(ctx: ExtensionContext) {
 	ctx.ui.setStatus(RECAP_KEY, undefined);
 }
 
+export function showRecap(ctx: ExtensionContext, recap: string) {
+	const theme = ctx.ui.theme;
+	const header = theme.fg("accent", theme.bold("✦ recap"));
+	const body = theme.fg("dim", recap);
+	let tui!: TUI;
+	ctx.ui.setWidget(
+		RECAP_KEY,
+		(candidate) => {
+			tui = candidate;
+			return new Container();
+		},
+		{ placement: "belowEditor" },
+	);
+
+	// Pi mounts the scrollable document as its first TUI child.
+	const document = tui.children[0];
+	if (tui.mode !== "fullscreen" || !(document instanceof Container)) {
+		ctx.ui.setWidget(RECAP_KEY, [header, body], { placement: "aboveEditor" });
+		return;
+	}
+
+	const content = new Container();
+	content.addChild(new Text(header, 1, 0));
+	content.addChild(new Text(body, 1, 0));
+	const transcriptRecap: Component = {
+		render: (width) => (tui.mode === "fullscreen" ? content.render(width) : []),
+		invalidate: () => content.invalidate(),
+	};
+	document.addChild(transcriptRecap);
+
+	ctx.ui.setWidget(
+		RECAP_KEY,
+		() => ({
+			render: () => [],
+			invalidate: () => {},
+			dispose: () => document.removeChild(transcriptRecap),
+		}),
+		{ placement: "belowEditor" },
+	);
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("recap-away-seconds", {
 		description: "Seconds of continuous terminal blur before an away recap is generated",
@@ -352,9 +394,7 @@ export default function (pi: ExtensionAPI) {
 			clearIdleTimer();
 			clearPostTurnTimer();
 
-			const theme = ctx.ui.theme;
-			const header = theme.fg("accent", theme.bold("✦ recap"));
-			ctx.ui.setWidget(RECAP_KEY, [header, theme.fg("dim", recap)], { placement: "aboveEditor" });
+			showRecap(ctx, recap);
 		} catch (err) {
 			if (!controller.signal.aborted) console.error("[session-recap] failed:", err);
 		} finally {
