@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## [0.5.0] - 2026-08-14
 
 ### Changed
 - Show recaps as temporary content at the end of the scrollable transcript in fullscreen mode, rather than as a fixed widget above the editor. Regular mode keeps the existing widget placement.
+
+### Fixed
+- Explicitly disable reasoning for Codex recap models instead of inheriting the server-side default effort.
 
 ## [0.4.1] - 2026-08-06
 

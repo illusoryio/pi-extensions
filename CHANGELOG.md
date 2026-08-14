@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.66] - 2026-08-14
+
+### Changed
+- Bundle `@tmustier/pi-session-recap` 0.5.0. Fullscreen recaps now appear as temporary transcript content, scroll naturally with the conversation, and disappear when work resumes. Regular mode keeps the existing above-editor placement.
+
 ## [0.1.65] - 2026-08-10
 
 ### Fixed
