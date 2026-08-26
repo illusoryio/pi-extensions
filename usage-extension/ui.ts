@@ -24,6 +24,8 @@ import {
 	TOTAL_SERIES_KEY,
 } from "./core/graph.ts";
 import type { GraphGroupBy, GraphMetric, GraphModel } from "./core/graph.ts";
+import { buildTaskCsv, TASK_TYPES } from "./core/tasks.ts";
+import type { TaskType, TaskTypeStats, TaskUsageData } from "./core/tasks.ts";
 import {
 	buildGraphCsv,
 	buildInsightsJson,
@@ -44,13 +46,14 @@ export interface UsageTheme {
 	bold(text: string): string;
 }
 
-type ViewMode = "table" | "insights" | "graph";
+type ViewMode = "table" | "tasks" | "insights" | "graph";
 
-const VIEW_CYCLE: ViewMode[] = ["graph", "table", "insights"];
+const VIEW_CYCLE: ViewMode[] = ["graph", "table", "tasks", "insights"];
 
 const VIEW_LABELS: Record<ViewMode, string> = {
 	graph: "Graphs",
 	table: "Table",
+	tasks: "Tasks",
 	insights: "Insights",
 };
 
@@ -287,7 +290,10 @@ export class UsageComponent {
 	private activeTab: TabName = "allTime";
 	private viewMode: ViewMode = "graph";
 	private data: UsageData;
+	private taskData: TaskUsageData;
 	private selectedIndex = 0;
+	private taskSelectedIndex = 0;
+	private expandedTasks = new Set<TaskType>();
 	private expanded = new Set<string>();
 	private providerOrder: string[] = [];
 	private theme: UsageTheme;
@@ -305,11 +311,12 @@ export class UsageComponent {
 	private graphHidden = new Set<string>();
 	private graphLegendIndex = 0;
 
-	constructor(theme: UsageTheme, data: UsageData, requestRender: () => void, done: () => void) {
+	constructor(theme: UsageTheme, data: UsageData, taskData: TaskUsageData, requestRender: () => void, done: () => void) {
 		this.theme = theme;
 		this.requestRender = requestRender;
 		this.done = done;
 		this.data = data;
+		this.taskData = taskData;
 		this.updateProviderOrder();
 	}
 
@@ -323,6 +330,15 @@ export class UsageComponent {
 
 	private clampTableSelection(): void {
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.visibleTable().providers.size - 1));
+		this.taskSelectedIndex = Math.min(this.taskSelectedIndex, Math.max(0, this.visibleTaskTypes().length - 1));
+	}
+
+	private visibleTaskTypes(): Array<[TaskType, TaskTypeStats]> {
+		const stats = this.taskData[this.activeTab];
+		return TASK_TYPES
+			.map((taskType) => [taskType, stats.taskTypes.get(taskType)] as const)
+			.filter((entry): entry is [TaskType, NonNullable<typeof entry[1]>] => entry[1] !== undefined)
+			.sort((a, b) => b[1].cost - a[1].cost);
 	}
 
 	/**
@@ -443,6 +459,19 @@ export class UsageComponent {
 			this.requestRender();
 		} else if (this.viewMode === "graph") {
 			// Graph-specific keys were handled above; swallow table-only keys.
+		} else if (this.viewMode === "tasks" && matchesKey(data, "up")) {
+			if (this.taskSelectedIndex > 0) this.taskSelectedIndex--;
+			this.requestRender();
+		} else if (this.viewMode === "tasks" && matchesKey(data, "down")) {
+			if (this.taskSelectedIndex < this.visibleTaskTypes().length - 1) this.taskSelectedIndex++;
+			this.requestRender();
+		} else if (this.viewMode === "tasks" && (matchesKey(data, "enter") || matchesKey(data, "space"))) {
+			const taskType = this.visibleTaskTypes()[this.taskSelectedIndex]?.[0];
+			if (taskType) {
+				if (this.expandedTasks.has(taskType)) this.expandedTasks.delete(taskType);
+				else this.expandedTasks.add(taskType);
+				this.requestRender();
+			}
 		} else if (this.viewMode === "table" && data === "/") {
 			this.tableFilterEditing = true;
 			this.requestRender();
@@ -531,6 +560,9 @@ export class UsageComponent {
 		} else if (this.viewMode === "insights") {
 			name = exportFileName("insights", this.activeTab, null, "json", now);
 			content = buildInsightsJson(this.activeTab, stats.totals, stats.insights.insights);
+		} else if (this.viewMode === "tasks") {
+			name = exportFileName("tasks", this.activeTab, "classified", "csv", now);
+			content = buildTaskCsv(this.taskData[this.activeTab]);
 		} else {
 			const visible = this.visibleTable();
 			const sliced = this.tableFilter.trim() !== "" || this.tableHidden.size > 0;
@@ -588,6 +620,19 @@ export class UsageComponent {
 		}
 
 		const layout = getTableLayout(width);
+		if (this.viewMode === "tasks") {
+			return clampLines(
+				[
+					...this.renderTitle(width),
+					...this.renderTabs(width, layout),
+					...this.renderTaskHeader(layout),
+					...this.renderTaskRows(layout),
+					...this.renderTaskTotals(layout),
+					...this.renderHelp(width),
+				],
+				width
+			);
+		}
 		return clampLines(
 			[
 				...this.renderTitle(width),
@@ -791,6 +836,53 @@ export class UsageComponent {
 		return [tabLine, ...infoLines, ""];
 	}
 
+	private renderTaskHeader(layout: TableLayout): string[] {
+		let headerLine = fitCell("Task Type / Model", layout.nameWidth);
+		for (const col of layout.columns) {
+			const label = fitCell(col.label, col.width, "right");
+			headerLine += col.dimmed ? this.theme.fg("dim", label) : label;
+		}
+		return [
+			this.theme.fg("muted", headerLine),
+			this.theme.fg("border", "─".repeat(layout.tableWidth)),
+			this.theme.fg("dim", "Offline classification · use `pi-usage tasks --llm` to classify ambiguous sessions"),
+		];
+	}
+
+	private renderTaskRows(layout: TableLayout): string[] {
+		const visible = this.visibleTaskTypes();
+		if (visible.length === 0) return [this.theme.fg("dim", "  No model-attributed usage for this period")];
+		const lines: string[] = [];
+		for (let index = 0; index < visible.length; index++) {
+			const [taskType, stats] = visible[index]!;
+			const expanded = this.expandedTasks.has(taskType);
+			const arrow = expanded ? "▾" : "▸";
+			const prefix = index === this.taskSelectedIndex
+				? this.theme.fg("accent", `${arrow} `)
+				: this.theme.fg("dim", `${arrow} `);
+			lines.push(this.renderDataRow(taskType, stats, layout, {
+				selected: index === this.taskSelectedIndex,
+				prefix,
+			}));
+			if (expanded) {
+				for (const model of Array.from(stats.models.values()).sort((a, b) => b.cost - a.cost)) {
+					lines.push(this.renderDataRow(`${model.provider}/${model.model}`, model, layout, { indent: 4, dimAll: true }));
+				}
+			}
+		}
+		return lines;
+	}
+
+	private renderTaskTotals(layout: TableLayout): string[] {
+		const totals = this.taskData[this.activeTab].totals;
+		let totalRow = fitCell(this.theme.bold("Total"), layout.nameWidth);
+		for (const col of layout.columns) {
+			const value = fitCell(col.getValue(totals), col.width, "right");
+			totalRow += col.dimmed ? this.theme.fg("dim", value) : value;
+		}
+		return [this.theme.fg("border", "─".repeat(layout.tableWidth)), totalRow, ""];
+	}
+
 	private renderHeader(layout: TableLayout): string[] {
 		const th = this.theme;
 
@@ -914,6 +1006,13 @@ export class UsageComponent {
 						"[v] view  [q] close",
 						"[q] close",
 				  ]
+				: this.viewMode === "tasks"
+				? [
+						"[Tab/←→] period  [↑↓] select  [Enter] expand models  [e] export  [v] view  [q] close",
+						"[Tab] period  [↑↓/Enter] tasks/models  [e] export  [v] view  [q] close",
+						"[↑↓/Enter] tasks  [v] view  [q] close",
+						"[q] close",
+				  ]
 				: [
 						"[Tab/←→] period  [↑↓] select  [Enter] expand  [/] filter  [x] hide  [a] all  [e] export  [v] view  [q] close",
 						"[Tab] period  [↑↓] select  [Enter] expand  [/] filter  [x] hide  [e] export  [v] view  [q] close",
@@ -950,14 +1049,15 @@ export function createUsageFrame(
 	theme: UsageTheme,
 	data: UsageData,
 	requestRender: () => void,
-	done: () => void
+	done: () => void,
+	taskData: TaskUsageData
 ): UsageFrame {
 	const container = new Container();
 	container.addChild(new Spacer(1));
 	container.addChild(new HorizontalBorder((text) => theme.fg("border", text)));
 	container.addChild(new Spacer(1));
 
-	const usage = new UsageComponent(theme, data, requestRender, done);
+	const usage = new UsageComponent(theme, data, taskData, requestRender, done);
 	return {
 		render: (width: number) => {
 			const borderLines = clampLines(container.render(width), width);

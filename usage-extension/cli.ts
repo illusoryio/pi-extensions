@@ -14,21 +14,26 @@ import {
 	buildGraphModel,
 	buildInsightsJson,
 	buildTableCsv,
+	buildTaskCsv,
+	collectTaskUsageData,
 	collectUsageData,
 	GROUP_ORDER,
 	METRIC_ORDER,
+	taskRows,
+	taskTypeSummaries,
 } from "./core/index.ts";
 import type {
 	GraphGroupBy,
 	GraphMetric,
 	TabName,
+	TaskUsageData,
 	TimeFilteredStats,
 	UsageData,
 } from "./core/index.ts";
 import { createUsageFrame, formatSinceDate } from "./ui.ts";
 import type { UsageTheme, UsageThemeColor } from "./ui.ts";
 
-type Command = "table" | "graph" | "insights";
+type Command = "table" | "graph" | "insights" | "tasks";
 type OutputFormat = "csv" | "json";
 
 interface CliOptions {
@@ -38,6 +43,7 @@ interface CliOptions {
 	metric: GraphMetric;
 	groupBy: GraphGroupBy;
 	cumulative: boolean;
+	useLlm: boolean;
 }
 
 const PERIOD_ALIASES: Record<string, TabName> = {
@@ -60,6 +66,7 @@ Usage:
   pi-usage [table] [options]            Print per-model CSV (or JSON)
   pi-usage insights [options]           Print structured insights JSON
   pi-usage graph [options]              Print graph-series CSV (or JSON)
+  pi-usage tasks [options]              Print task-type × model CSV (or JSON)
 
 Options:
   -p, --period <period>                 today | this-week | last-week | last-30-days | all-time
@@ -69,6 +76,7 @@ Options:
       --group-by <group>                provider | model | thinking | total (graph)
       --per-bucket                      Graph raw buckets instead of cumulative values
       --cumulative                      Graph cumulative values (default)
+      --llm                             LLM fallback for ambiguous task classifications (tasks only)
   -h, --help                            Show help
   -v, --version                         Show version
 `;
@@ -98,19 +106,20 @@ function parseArgs(args: string[]): CliOptions | "help" | "version" {
 	let metric: GraphMetric = "cost";
 	let groupBy: GraphGroupBy = "provider";
 	let cumulative = true;
+	let useLlm = false;
 	let commandSeen = false;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i]!;
 		if (arg === "-h" || arg === "--help") return "help";
 		if (arg === "-v" || arg === "--version") return "version";
-		if (arg === "table" || arg === "graph" || arg === "insights") {
+		if (arg === "table" || arg === "graph" || arg === "insights" || arg === "tasks") {
 			if (commandSeen) fail(`Only one output command may be selected (got ${arg})`);
 			command = arg;
 			commandSeen = true;
 			continue;
 		}
-		if (arg === "--table" || arg === "--graph" || arg === "--insights") {
+		if (arg === "--table" || arg === "--graph" || arg === "--insights" || arg === "--tasks") {
 			if (commandSeen) fail(`Only one output command may be selected (got ${arg})`);
 			command = arg.slice(2) as Command;
 			commandSeen = true;
@@ -152,11 +161,16 @@ function parseArgs(args: string[]): CliOptions | "help" | "version" {
 			cumulative = true;
 			continue;
 		}
+		if (arg === "--llm" || arg === "--classify-llm") {
+			useLlm = true;
+			continue;
+		}
 		fail(`Unknown argument: ${arg}`);
 	}
 
 	if (command === "insights" && format === "csv") format = "json";
-	return { command, format, period, metric, groupBy, cumulative };
+	if (useLlm && command !== "tasks") fail("--llm is only valid with the tasks command");
+	return { command, format, period, metric, groupBy, cumulative, useLlm };
 }
 
 function serializePeriod(period: TabName, stats: TimeFilteredStats) {
@@ -190,10 +204,18 @@ function serializePeriod(period: TabName, stats: TimeFilteredStats) {
 	};
 }
 
-function printOutput(data: UsageData, options: CliOptions): void {
+function printOutput(data: UsageData, options: CliOptions, tasks?: TaskUsageData): void {
 	const stats = data[options.period];
 	if (options.command === "insights") {
 		process.stdout.write(buildInsightsJson(options.period, stats.totals, stats.insights.insights));
+		return;
+	}
+	if (options.command === "tasks") {
+		if (!tasks) fail("Task usage data was not collected");
+		const stats = tasks[options.period];
+		process.stdout.write(options.format === "json"
+			? JSON.stringify({ period: options.period, totals: stats.totals, taskTypes: taskTypeSummaries(stats), rows: taskRows(stats) }) + "\n"
+			: buildTaskCsv(stats));
 		return;
 	}
 	if (options.command === "graph") {
@@ -287,6 +309,7 @@ async function runTui(): Promise<void> {
 		return;
 	}
 
+	const tasks = await collectTaskUsageData({ usageData: data, signal: loader.signal });
 	loader.dispose();
 	tui.removeChild(loader);
 	await new Promise<void>((resolve) => {
@@ -299,7 +322,7 @@ async function runTui(): Promise<void> {
 			tui.stop();
 			resolve();
 		};
-		const frame = createUsageFrame(theme, data, () => tui.requestRender(), finish);
+		const frame = createUsageFrame(theme, data, () => tui.requestRender(), finish, tasks);
 		closeDashboard = finish;
 		tui.addChild(frame);
 		tui.setFocus(frame);
@@ -324,7 +347,10 @@ async function main(): Promise<void> {
 	}
 	const data = await collectUsageData();
 	if (!data) fail("Usage collection was cancelled");
-	printOutput(data, options);
+	const tasks = options.command === "tasks"
+		? await collectTaskUsageData({ usageData: data, useLlm: options.useLlm })
+		: undefined;
+	printOutput(data, options, tasks);
 }
 
 main().catch((error) => {

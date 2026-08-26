@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0] - 2026-08-26
+
+### Added
+- Hybrid per-session task classification across `design/frontend`, `planning`, `research`, `infra`, `debug`, `docs`, and `other`. Offline heuristics inspect initial user messages, session paths/issue ids, and cwd; ambiguous results can use an explicit `--llm` Makora DeepSeek V4 Flash fallback with a schema-enforced strict tool call and confidence floor.
+- Incremental `~/.pi/agent/pi-usage-cache/classifications.json` cache keyed by session id and latest file mtime.
+- `pi-usage tasks [--period X] [--json|--csv] [--llm]` output with task type × provider/model sessions, messages, cost, and tokens.
+- Offline Tasks TUI view with expandable provider/model rows and CSV export; it performs no LLM calls but reuses cached classifications.
+
+### Internal
+- The existing parser, usage cache format, byte scanning, deduplication, and nested-session reconciliation are unchanged. Task rows deliberately include model-attributed assistant usage only because tool/summary usage has no reliable originating model.
+
 ## [0.10.0] - 2026-08-26
 
 ### Added

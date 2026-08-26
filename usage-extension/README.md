@@ -7,7 +7,7 @@ A standalone CLI/TUI and Pi extension that display aggregated usage statistics a
 ## Compatibility
 
 - **Pi version:** 0.42.4+
-- **Last updated:** 2026-08-26 (0.10.0)
+- **Last updated:** 2026-08-26 (0.11.0)
 
 Pi 0.81.0+ can persist tool-result, compaction, and branch-summary usage. `/usage` includes that auxiliary usage in totals under `Tools / summaries`. Nested-agent reports are reconciled against recursively scanned child sessions, so a child call is counted once: when every child session file behind a report is part of the scan, the children are the record and the parent's aggregate is skipped; otherwise the report is counted. Older Pi versions remain supported.
 
@@ -78,6 +78,9 @@ pi-usage table --period this-week       # per-model CSV
 pi-usage insights --period last-30-days # structured insights JSON
 pi-usage graph --period today           # cumulative cost-by-provider CSV
 pi-usage graph --metric tokens --group-by model --per-bucket --json
+pi-usage tasks --period last-30-days       # task type × provider/model CSV
+pi-usage tasks --json                      # structured task totals and rows
+pi-usage tasks --llm --json                # opt-in LLM fallback for ambiguous sessions
 ```
 
 Periods are `today`, `this-week`, `last-week`, `last-30-days`, and `all-time`. Graph metrics are `cost`, `tokens`, `messages`, and `reasoning`; groupings are `provider`, `model`, `thinking`, and `total`.
@@ -96,13 +99,22 @@ The extension is a thin wrapper around `core/index.ts` and the shared `UsageComp
 
 ### Views
 
-`/usage` has three view modes, shown as a tab strip in the title and cycled with `v`:
+`/usage` has four view modes, shown as a tab strip in the title and cycled with `v`:
 
 - **Graphs** (default) — an interactive braille line-chart explorer for usage over time (screenshot at the top of this page, details below).
 - **Table** — per-provider / per-model stats with cost and token breakdown, with keyboard filtering (details below).
+- **Tasks** — cost, messages, and tokens by task type; expand a task type to see its provider/models.
 - **Insights** — data-driven characteristics of your cost for the active time period (details below). Insights are **independent lenses**, not a breakdown, so they overlap and don't sum to 100%.
 
 Every view can export its current slice with `e` — see [Export](#export).
+
+### Task classification
+
+Every session is classified as `design/frontend`, `planning`, `research`, `infra`, `debug`, `docs`, or `other`. The default pass is fully offline: weighted keyword heuristics inspect up to the first three user messages, the session path and any issue ids in it, plus the session cwd. Ties and low-confidence matches become `other` rather than guesses.
+
+`pi-usage tasks --llm` opts ambiguous sessions into batched Makora DeepSeek V4 Flash classification. It reads the configured provider and key reference from `~/.pi/agent/models.json` and uses a forced strict tool call returning `{taskType, confidence}`. Results below the confidence threshold remain `other`. The TUI never makes network calls; it uses heuristics plus any already-cached LLM classifications, so opening `/usage` remains fully offline.
+
+Classifications are cached incrementally in `~/.pi/agent/pi-usage-cache/classifications.json`, keyed by session id and latest file mtime. Task rows include model-attributed assistant usage only; tool, compaction, and summary usage has no reliable originating model and remains visible in the regular Table view instead.
 
 ![Table view of /usage](screenshot.png)
 
@@ -154,6 +166,7 @@ Press `e` in any view to write the **current slice** to `/tmp` (or the OS temp d
 | Table | `usage-table-<period>[-filtered]-<stamp>.csv` | per-model rows + TOTAL, full precision; honors the active filter/hides |
 | Graphs | `usage-graph-<period>-<slice>-<stamp>.csv` | exactly what's plotted: visible series only, current metric/grouping/cumulative, ISO bucket starts |
 | Insights | `usage-insights-<period>-<stamp>.json` | period, totals, and the structured insight list |
+| Tasks | `usage-tasks-<period>-classified-<stamp>.csv` | task type × provider/model rows from cached offline classification |
 
 A `✓ Saved …` note confirms the write (or reports the error) above the help line.
 
@@ -218,7 +231,7 @@ On narrow terminals, `/usage` automatically switches to a compact table instead 
 | `Tab` / `←` `→` | Switch time period |
 | `↑` `↓` | Select provider *(table)* / move legend cursor *(graphs)* |
 | `Enter` / `Space` | Expand/collapse provider *(table)* / toggle series visibility *(graphs)* |
-| `v` | Cycle Graphs → Table → Insights view |
+| `v` | Cycle Graphs → Table → Tasks → Insights view |
 | `e` | Export the current slice to CSV/JSON |
 | `/` | Type-to-filter providers and models *(table)* |
 | `x` | Hide the selected provider row *(table)* |
@@ -232,7 +245,7 @@ On narrow terminals, `/usage` automatically switches to a compact table instead 
 
 `/usage` builds its stats from every session JSONL file under `<agentDir>/sessions`. To keep opens fast on large histories (multi-GB, thousands of files):
 
-- **On-disk cache.** Per-file extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Warm opens only re-parse session files that changed since the last run — on a 5.2 GB / 3,310-file corpus that takes the open from ~17 s to ~0.3 s.
+- **On-disk caches.** Per-file usage extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Task classifications use `~/.pi/agent/pi-usage-cache/classifications.json`, keyed by session id + latest file mtime. Warm opens only revisit changed files — on a 5.2 GB / 3,310-file corpus the usage cache takes the open from ~17 s to ~0.3 s.
 - **First open** after install (or after deleting the cache) does a one-off full build, showing the usual cancellable loader. Cancelling saves partial progress, so the next open resumes where it left off.
 - The cache is safe to delete at any time; it is rebuilt automatically. Corrupt or version-mismatched caches are ignored and rebuilt rather than trusted.
 - **0.9.3 bumps the cache format to v5** to retain child-session linkage for tool-usage reconciliation (v4 added Pi 0.81.0 tool and summary usage; v3 added session working directory and compaction markers; v2 added thinking level and reasoning tokens). The first open after upgrading does a one-off full rebuild (with a progress message and live file counter), then warm opens are fast again.

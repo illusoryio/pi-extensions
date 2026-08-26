@@ -1,6 +1,6 @@
 {
   "name": "@tmustier/pi-usage-extension",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Usage statistics CLI and dashboard for Pi sessions.",
   "type": "module",
   "bin": {
@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build:binary": "bun build --compile ./cli.ts --outfile ./dist/pi-usage",
+    "test": "bun test ./core/tasks.test.ts",
     "typecheck": "tsc --noEmit --target ES2022 --module preserve --moduleResolution bundler --allowImportingTsExtensions --resolveJsonModule --esModuleInterop --skipLibCheck ./index.ts ./ui.ts ./cli.ts ./core/index.ts"
   },
   "license": "MIT",

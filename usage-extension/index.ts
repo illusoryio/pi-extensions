@@ -6,7 +6,9 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { CancellableLoader } from "@earendil-works/pi-tui";
 
 import { collectUsageData } from "./core/data.ts";
+import { collectTaskUsageData } from "./core/tasks.ts";
 import type { CollectProgress, UsageData } from "./core/data.ts";
+import type { TaskUsageData } from "./core/tasks.ts";
 import { createUsageFrame, formatSinceDate } from "./ui.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -15,7 +17,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			if (!ctx.hasUI) return;
 
-			const data = await ctx.ui.custom<UsageData | null>((tui, theme, _kb, done) => {
+			const bundle = await ctx.ui.custom<{ data: UsageData; tasks: TaskUsageData } | null>((tui, theme, _kb, done) => {
 				const loader = new CancellableLoader(
 					tui,
 					(text: string) => theme.fg("accent", text),
@@ -23,7 +25,7 @@ export default function (pi: ExtensionAPI) {
 					"Loading Usage..."
 				);
 				let finished = false;
-				const finish = (value: UsageData | null) => {
+				const finish = (value: { data: UsageData; tasks: TaskUsageData } | null) => {
 					if (finished) return;
 					finished = true;
 					loader.dispose();
@@ -45,15 +47,18 @@ export default function (pi: ExtensionAPI) {
 				};
 
 				collectUsageData({ signal: loader.signal, onProgress })
+					.then(async (data) => data
+						? { data, tasks: await collectTaskUsageData({ usageData: data, signal: loader.signal }) }
+						: null)
 					.then(finish)
 					.catch(() => finish(null));
 				return loader;
 			});
 
-			if (!data) return;
+			if (!bundle) return;
 
 			await ctx.ui.custom<void>((tui, theme, _kb, done) =>
-				createUsageFrame(theme, data, () => tui.requestRender(), done)
+				createUsageFrame(theme, bundle.data, () => tui.requestRender(), done, bundle.tasks)
 			);
 		},
 	});
