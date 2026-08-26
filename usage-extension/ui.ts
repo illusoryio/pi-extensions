@@ -24,6 +24,7 @@ import {
 	TOTAL_SERIES_KEY,
 } from "./core/graph.ts";
 import type { GraphGroupBy, GraphMetric, GraphModel } from "./core/graph.ts";
+import type { CorrectionCounts, CorrectionUsageData } from "./core/corrections.ts";
 import { buildTaskCsv, TASK_TYPES } from "./core/tasks.ts";
 import type { TaskType, TaskTypeStats, TaskUsageData } from "./core/tasks.ts";
 import {
@@ -61,11 +62,13 @@ const VIEW_LABELS: Record<ViewMode, string> = {
 // Column Configuration
 // =============================================================================
 
+type DisplayStats = BaseStats & { sessions: Set<string> | number } & Partial<CorrectionCounts>;
+
 interface DataColumn {
 	label: string;
 	width: number;
 	dimmed?: boolean;
-	getValue: (stats: BaseStats & { sessions: Set<string> | number }) => string;
+	getValue: (stats: DisplayStats) => string;
 }
 
 interface TableLayoutCandidate {
@@ -93,6 +96,18 @@ const MSGS_COLUMN: DataColumn = {
 	label: "Msgs",
 	width: 9,
 	getValue: (s) => formatNumber(s.messages),
+};
+
+const CORRECTION_COLUMN: DataColumn = {
+	label: "Corr",
+	width: 8,
+	getValue: (s) => {
+		const turns = s.assistantTurns ?? 0;
+		const corrections = s.corrections ?? 0;
+		if (turns === 0 || corrections === 0) return "-";
+		const percent = (corrections / turns) * 100;
+		return `${percent < 1 ? percent.toFixed(2) : percent.toFixed(1)}%`;
+	},
 };
 
 const COST_COLUMN: DataColumn = {
@@ -134,6 +149,7 @@ const CACHE_COLUMN: DataColumn = {
 const FULL_DATA_COLUMNS: DataColumn[] = [
 	SESSIONS_COLUMN,
 	MSGS_COLUMN,
+	CORRECTION_COLUMN,
 	COST_COLUMN,
 	TOKENS_COLUMN,
 	INPUT_COLUMN,
@@ -143,8 +159,8 @@ const FULL_DATA_COLUMNS: DataColumn[] = [
 
 const TABLE_LAYOUTS: TableLayoutCandidate[] = [
 	{ columns: FULL_DATA_COLUMNS, minNameWidth: MAX_NAME_COL_WIDTH },
-	{ columns: [SESSIONS_COLUMN, MSGS_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 14, compact: true },
-	{ columns: [SESSIONS_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 12, compact: true },
+	{ columns: [SESSIONS_COLUMN, MSGS_COLUMN, CORRECTION_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 14, compact: true },
+	{ columns: [SESSIONS_COLUMN, CORRECTION_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 12, compact: true },
 	{ columns: [COST_COLUMN, TOKENS_COLUMN], minNameWidth: 10, compact: true },
 	{ columns: [COST_COLUMN], minNameWidth: 8, compact: true },
 ];
@@ -291,6 +307,7 @@ export class UsageComponent {
 	private viewMode: ViewMode = "graph";
 	private data: UsageData;
 	private taskData: TaskUsageData;
+	private correctionData: CorrectionUsageData;
 	private selectedIndex = 0;
 	private taskSelectedIndex = 0;
 	private expandedTasks = new Set<TaskType>();
@@ -311,12 +328,20 @@ export class UsageComponent {
 	private graphHidden = new Set<string>();
 	private graphLegendIndex = 0;
 
-	constructor(theme: UsageTheme, data: UsageData, taskData: TaskUsageData, requestRender: () => void, done: () => void) {
+	constructor(
+		theme: UsageTheme,
+		data: UsageData,
+		taskData: TaskUsageData,
+		correctionData: CorrectionUsageData,
+		requestRender: () => void,
+		done: () => void
+	) {
 		this.theme = theme;
 		this.requestRender = requestRender;
 		this.done = done;
 		this.data = data;
 		this.taskData = taskData;
+		this.correctionData = correctionData;
 		this.updateProviderOrder();
 	}
 
@@ -331,6 +356,24 @@ export class UsageComponent {
 	private clampTableSelection(): void {
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.visibleTable().providers.size - 1));
 		this.taskSelectedIndex = Math.min(this.taskSelectedIndex, Math.max(0, this.visibleTaskTypes().length - 1));
+	}
+
+	private withCorrections<T extends BaseStats & { sessions: Set<string> | number }>(
+		stats: T,
+		filter: { taskType?: TaskType; provider?: string; model?: string; models?: Set<string>; pairs?: Set<string> } = {}
+	): T & CorrectionCounts {
+		const counts: CorrectionCounts = { assistantTurns: 0, corrections: 0, rapidFollowUps: 0 };
+		for (const cell of this.correctionData[this.activeTab].cells.values()) {
+			if (filter.taskType && cell.taskType !== filter.taskType) continue;
+			if (filter.provider && cell.provider !== filter.provider) continue;
+			if (filter.model && cell.model !== filter.model) continue;
+			if (filter.models && !filter.models.has(cell.model)) continue;
+			if (filter.pairs && !filter.pairs.has(`${cell.provider}\u0000${cell.model}`)) continue;
+			counts.assistantTurns += cell.assistantTurns;
+			counts.corrections += cell.corrections;
+			counts.rapidFollowUps += cell.rapidFollowUps;
+		}
+		return Object.assign({}, stats, counts);
 	}
 
 	private visibleTaskTypes(): Array<[TaskType, TaskTypeStats]> {
@@ -860,13 +903,18 @@ export class UsageComponent {
 			const prefix = index === this.taskSelectedIndex
 				? this.theme.fg("accent", `${arrow} `)
 				: this.theme.fg("dim", `${arrow} `);
-			lines.push(this.renderDataRow(taskType, stats, layout, {
+			lines.push(this.renderDataRow(taskType, this.withCorrections(stats, { taskType }), layout, {
 				selected: index === this.taskSelectedIndex,
 				prefix,
 			}));
 			if (expanded) {
 				for (const model of Array.from(stats.models.values()).sort((a, b) => b.cost - a.cost)) {
-					lines.push(this.renderDataRow(`${model.provider}/${model.model}`, model, layout, { indent: 4, dimAll: true }));
+					lines.push(this.renderDataRow(
+						`${model.provider}/${model.model}`,
+						this.withCorrections(model, { taskType, provider: model.provider, model: model.model }),
+						layout,
+						{ indent: 4, dimAll: true }
+					));
 				}
 			}
 		}
@@ -874,7 +922,7 @@ export class UsageComponent {
 	}
 
 	private renderTaskTotals(layout: TableLayout): string[] {
-		const totals = this.taskData[this.activeTab].totals;
+		const totals = this.withCorrections(this.taskData[this.activeTab].totals);
 		let totalRow = fitCell(this.theme.bold("Total"), layout.nameWidth);
 		for (const col of layout.columns) {
 			const value = fitCell(col.getValue(totals), col.width, "right");
@@ -897,7 +945,7 @@ export class UsageComponent {
 
 	private renderDataRow(
 		name: string,
-		stats: BaseStats & { sessions: Set<string> | number },
+		stats: DisplayStats,
 		layout: TableLayout,
 		options: { indent?: number; selected?: boolean; dimAll?: boolean; prefix?: string } = {}
 	): string {
@@ -944,18 +992,26 @@ export class UsageComponent {
 			const arrow = isExpanded ? "▾" : "▸";
 			const prefix = isSelected ? th.fg("accent", `${arrow} `) : th.fg("dim", `${arrow} `);
 
+			const visibleModels = new Set(providerStats.models.keys());
 			lines.push(
-				this.renderDataRow(providerName, providerStats, layout, {
-					selected: isSelected,
-					prefix,
-				})
+				this.renderDataRow(
+					providerName,
+					this.withCorrections(providerStats, { provider: providerName, models: visibleModels }),
+					layout,
+					{ selected: isSelected, prefix }
+				)
 			);
 
 			if (isExpanded) {
 				const models = Array.from(providerStats.models.entries()).sort((a, b) => b[1].cost - a[1].cost);
 
 				for (const [modelName, modelStats] of models) {
-					lines.push(this.renderDataRow(modelName, modelStats, layout, { indent: 4, dimAll: true }));
+					lines.push(this.renderDataRow(
+						modelName,
+						this.withCorrections(modelStats, { provider: providerName, model: modelName }),
+						layout,
+						{ indent: 4, dimAll: true }
+					));
 				}
 			}
 		}
@@ -965,11 +1021,16 @@ export class UsageComponent {
 
 	private renderTotals(layout: TableLayout): string[] {
 		const th = this.theme;
-		const { totals } = this.visibleTable();
+		const { totals, providers } = this.visibleTable();
+		const visiblePairs = new Set<string>();
+		for (const [provider, stats] of providers) {
+			for (const model of stats.models.keys()) visiblePairs.add(`${provider}\u0000${model}`);
+		}
+		const correctedTotals = this.withCorrections(totals, { pairs: visiblePairs });
 
 		let totalRow = fitCell(th.bold("Total"), layout.nameWidth);
 		for (const col of layout.columns) {
-			const value = fitCell(col.getValue(totals), col.width, "right");
+			const value = fitCell(col.getValue(correctedTotals), col.width, "right");
 			totalRow += col.dimmed ? th.fg("dim", value) : value;
 		}
 
@@ -1050,14 +1111,15 @@ export function createUsageFrame(
 	data: UsageData,
 	requestRender: () => void,
 	done: () => void,
-	taskData: TaskUsageData
+	taskData: TaskUsageData,
+	correctionData: CorrectionUsageData
 ): UsageFrame {
 	const container = new Container();
 	container.addChild(new Spacer(1));
 	container.addChild(new HorizontalBorder((text) => theme.fg("border", text)));
 	container.addChild(new Spacer(1));
 
-	const usage = new UsageComponent(theme, data, taskData, requestRender, done);
+	const usage = new UsageComponent(theme, data, taskData, correctionData, requestRender, done);
 	return {
 		render: (width: number) => {
 			const borderLines = clampLines(container.render(width), width);

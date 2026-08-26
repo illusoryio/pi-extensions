@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.0] - 2026-08-26
+
+### Added
+- `pi-usage corrections [--period X] [--json|--csv]` with assistant turns, curated rework-signal matches, correction rate, and a separately reported short rapid-follow-up signal for every task type × provider/model cell.
+- Period-scoped **Corr** column in the regular provider/model table and Tasks TUI view.
+- Incremental `<agentDir>/pi-usage-cache/corrections.json` conversation cache keyed by session-file size and mtime.
+
+### Accuracy
+- Precision-first correction patterns were tuned on real history. A deterministic SHA-256-sorted 100-match sample from the final 365-match candidate set contained 100 genuine rework signals and no labeled false positives; seven observed false positives were removed before resampling.
+- Rapid follow-ups require a non-empty user message of at most 240 characters and 40 words within 30 seconds of assistant completion and never inflate correction rate.
+
+### Internal
+- The existing usage parser and its cache, deduplication, and nested-session reconciliation remain unchanged. Correction turns use the same assistant timestamp + usage fingerprint identity so their denominators match model-attributed usage counts.
+
 ## [0.11.0] - 2026-08-26
 
 ### Added

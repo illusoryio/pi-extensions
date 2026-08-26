@@ -7,7 +7,7 @@ A standalone CLI/TUI and Pi extension that display aggregated usage statistics a
 ## Compatibility
 
 - **Pi version:** 0.42.4+
-- **Last updated:** 2026-08-26 (0.11.0)
+- **Last updated:** 2026-08-26 (0.12.0)
 
 Pi 0.81.0+ can persist tool-result, compaction, and branch-summary usage. `/usage` includes that auxiliary usage in totals under `Tools / summaries`. Nested-agent reports are reconciled against recursively scanned child sessions, so a child call is counted once: when every child session file behind a report is part of the scan, the children are the record and the parent's aggregate is skipped; otherwise the report is counted. Older Pi versions remain supported.
 
@@ -81,6 +81,8 @@ pi-usage graph --metric tokens --group-by model --per-bucket --json
 pi-usage tasks --period last-30-days       # task type × provider/model CSV
 pi-usage tasks --json                      # structured task totals and rows
 pi-usage tasks --llm --json                # opt-in LLM fallback for ambiguous sessions
+pi-usage corrections --period last-30-days # correction rates by task type × model (CSV)
+pi-usage corrections --json                # structured correction and rapid-follow-up rows
 ```
 
 Periods are `today`, `this-week`, `last-week`, `last-30-days`, and `all-time`. Graph metrics are `cost`, `tokens`, `messages`, and `reasoning`; groupings are `provider`, `model`, `thinking`, and `total`.
@@ -115,6 +117,16 @@ Every session is classified as `design/frontend`, `planning`, `research`, `infra
 `pi-usage tasks --llm` opts ambiguous sessions into batched Makora DeepSeek V4 Flash classification. It reads the configured provider and key reference from `~/.pi/agent/models.json` and uses a forced strict tool call returning `{taskType, confidence}`. Results below the confidence threshold remain `other`. The TUI never makes network calls; it uses heuristics plus any already-cached LLM classifications, so opening `/usage` remains fully offline.
 
 Classifications are cached incrementally in `~/.pi/agent/pi-usage-cache/classifications.json`, keyed by session id and latest file mtime. Task rows include model-attributed assistant usage only; tool, compaction, and summary usage has no reliable originating model and remains visible in the regular Table view instead.
+
+### Correction rate
+
+The Table and Tasks views include a period-scoped **Corr** column, and `pi-usage corrections` emits the full model × task-type lens. The denominator is deduplicated assistant turns. A correction is counted only when the next conversational user message directly follows an assistant boundary and begins with or contains a curated high-precision rework signal: anchored `No`/`Nope`/`STOP`, `fix it/this/that`, `try again`, `still not working`, direct `wrong` constructions, `why did you`, `not what I/we`, explicit `redo`/`revert`/`undo`, `that's not`, `you broke/removed/deleted/missed`, or an anchored `don't <action>`. It is attributed to that preceding assistant's provider/model and the session's task type.
+
+Short direct user follow-ups (non-empty, at most 240 characters and 40 words) arriving less than 30 seconds after assistant completion that do **not** match a correction pattern are reported separately as weak `rapidFollowUps`; they are never folded into correction rate.
+
+Precision was tuned against a deterministic SHA-256-sorted sample of 100 matches from 365 real all-time matches on 2026-08-26: all 100 were labeled genuine rework/correction signals, for an estimated **0% false-positive rate / 100% precision in the sample**. Before resampling, seven observed false positives were removed from the 372-match candidate set, including `No, that's fine...`, wrong-chat/session admissions, operator self-corrections, and hypothetical future reverts. This is a heuristic, not sentiment analysis. Known residual ambiguity includes rework briefs that quote someone else's “wrong” finding, process-level stop/steer messages, and retries caused by external state rather than model error. Precision is favored over recall: self-corrections (`I was wrong`), “correct me if I'm wrong,” exploratory “what is wrong?” questions, `wrong play`, `do not redo`, acceptances, and unanchored quoted/pasted triggers are deliberately excluded.
+
+Conversation scans are cached per file at `~/.pi/agent/pi-usage-cache/corrections.json` using size + mtime, so warm correction reports only rescan changed sessions.
 
 ![Table view of /usage](screenshot.png)
 
@@ -214,6 +226,7 @@ Time periods are calculated in the local timezone where Pi runs. If you want to 
 | **Provider / Model** | Provider name, expandable to show models |
 | **Sessions** | Number of unique sessions |
 | **Msgs** | Number of assistant messages; auxiliary `Tools / summaries` usage does not inflate this count |
+| **Corr** | Corrections ÷ assistant turns for the visible provider/model/task slice |
 | **Cost** | Total cost in USD (from API response), including usage reported by tools and summaries |
 | **Tokens** | Fresh tokens for the turn: input + output + cache write |
 | **↑In** | Fresh input tokens: input + cache write *(dimmed)* |
@@ -245,7 +258,7 @@ On narrow terminals, `/usage` automatically switches to a compact table instead 
 
 `/usage` builds its stats from every session JSONL file under `<agentDir>/sessions`. To keep opens fast on large histories (multi-GB, thousands of files):
 
-- **On-disk caches.** Per-file usage extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Task classifications use `~/.pi/agent/pi-usage-cache/classifications.json`, keyed by session id + latest file mtime. Warm opens only revisit changed files — on a 5.2 GB / 3,310-file corpus the usage cache takes the open from ~17 s to ~0.3 s.
+- **On-disk caches.** Per-file usage extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Task classifications use `<agentDir>/pi-usage-cache/classifications.json`, keyed by session id + latest file mtime; direct conversational turns for correction analysis use `<agentDir>/pi-usage-cache/corrections.json`, keyed by file size + mtime. Warm opens only revisit changed files — on a 5.2 GB / 3,310-file corpus the usage cache takes the open from ~17 s to ~0.3 s.
 - **First open** after install (or after deleting the cache) does a one-off full build, showing the usual cancellable loader. Cancelling saves partial progress, so the next open resumes where it left off.
 - The cache is safe to delete at any time; it is rebuilt automatically. Corrupt or version-mismatched caches are ignored and rebuilt rather than trusted.
 - **0.9.3 bumps the cache format to v5** to retain child-session linkage for tool-usage reconciliation (v4 added Pi 0.81.0 tool and summary usage; v3 added session working directory and compaction markers; v2 added thinking level and reasoning tokens). The first open after upgrading does a one-off full rebuild (with a progress message and live file counter), then warm opens are fast again.

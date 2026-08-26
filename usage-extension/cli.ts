@@ -12,18 +12,22 @@ import packageJson from "./package.json" with { type: "json" };
 import {
 	buildGraphCsv,
 	buildGraphModel,
+	buildCorrectionCsv,
 	buildInsightsJson,
 	buildTableCsv,
 	buildTaskCsv,
+	collectCorrectionUsageData,
 	collectTaskUsageData,
 	collectUsageData,
 	GROUP_ORDER,
 	METRIC_ORDER,
+	correctionRows,
 	taskRows,
 	taskTypeSummaries,
 } from "./core/index.ts";
 import type {
 	GraphGroupBy,
+	CorrectionUsageData,
 	GraphMetric,
 	TabName,
 	TaskUsageData,
@@ -33,7 +37,7 @@ import type {
 import { createUsageFrame, formatSinceDate } from "./ui.ts";
 import type { UsageTheme, UsageThemeColor } from "./ui.ts";
 
-type Command = "table" | "graph" | "insights" | "tasks";
+type Command = "table" | "graph" | "insights" | "tasks" | "corrections";
 type OutputFormat = "csv" | "json";
 
 interface CliOptions {
@@ -67,6 +71,7 @@ Usage:
   pi-usage insights [options]           Print structured insights JSON
   pi-usage graph [options]              Print graph-series CSV (or JSON)
   pi-usage tasks [options]              Print task-type × model CSV (or JSON)
+  pi-usage corrections [options]        Print correction rates by task type × model
 
 Options:
   -p, --period <period>                 today | this-week | last-week | last-30-days | all-time
@@ -113,13 +118,13 @@ function parseArgs(args: string[]): CliOptions | "help" | "version" {
 		const arg = args[i]!;
 		if (arg === "-h" || arg === "--help") return "help";
 		if (arg === "-v" || arg === "--version") return "version";
-		if (arg === "table" || arg === "graph" || arg === "insights" || arg === "tasks") {
+		if (arg === "table" || arg === "graph" || arg === "insights" || arg === "tasks" || arg === "corrections") {
 			if (commandSeen) fail(`Only one output command may be selected (got ${arg})`);
 			command = arg;
 			commandSeen = true;
 			continue;
 		}
-		if (arg === "--table" || arg === "--graph" || arg === "--insights" || arg === "--tasks") {
+		if (arg === "--table" || arg === "--graph" || arg === "--insights" || arg === "--tasks" || arg === "--corrections") {
 			if (commandSeen) fail(`Only one output command may be selected (got ${arg})`);
 			command = arg.slice(2) as Command;
 			commandSeen = true;
@@ -204,10 +209,23 @@ function serializePeriod(period: TabName, stats: TimeFilteredStats) {
 	};
 }
 
-function printOutput(data: UsageData, options: CliOptions, tasks?: TaskUsageData): void {
+function printOutput(
+	data: UsageData,
+	options: CliOptions,
+	tasks?: TaskUsageData,
+	corrections?: CorrectionUsageData
+): void {
 	const stats = data[options.period];
 	if (options.command === "insights") {
 		process.stdout.write(buildInsightsJson(options.period, stats.totals, stats.insights.insights));
+		return;
+	}
+	if (options.command === "corrections") {
+		if (!corrections) fail("Correction usage data was not collected");
+		const stats = corrections[options.period];
+		process.stdout.write(options.format === "json"
+			? JSON.stringify({ period: options.period, totals: stats.totals, rows: correctionRows(stats) }) + "\n"
+			: buildCorrectionCsv(stats));
 		return;
 	}
 	if (options.command === "tasks") {
@@ -310,6 +328,7 @@ async function runTui(): Promise<void> {
 	}
 
 	const tasks = await collectTaskUsageData({ usageData: data, signal: loader.signal });
+	const corrections = (await collectCorrectionUsageData({ usageData: data, signal: loader.signal })).data;
 	loader.dispose();
 	tui.removeChild(loader);
 	await new Promise<void>((resolve) => {
@@ -322,7 +341,7 @@ async function runTui(): Promise<void> {
 			tui.stop();
 			resolve();
 		};
-		const frame = createUsageFrame(theme, data, () => tui.requestRender(), finish, tasks);
+		const frame = createUsageFrame(theme, data, () => tui.requestRender(), finish, tasks, corrections);
 		closeDashboard = finish;
 		tui.addChild(frame);
 		tui.setFocus(frame);
@@ -347,10 +366,13 @@ async function main(): Promise<void> {
 	}
 	const data = await collectUsageData();
 	if (!data) fail("Usage collection was cancelled");
-	const tasks = options.command === "tasks"
+	const tasks = options.command === "tasks" || options.command === "corrections"
 		? await collectTaskUsageData({ usageData: data, useLlm: options.useLlm })
 		: undefined;
-	printOutput(data, options, tasks);
+	const corrections = options.command === "corrections"
+		? (await collectCorrectionUsageData({ usageData: data })).data
+		: undefined;
+	printOutput(data, options, tasks, corrections);
 }
 
 main().catch((error) => {
