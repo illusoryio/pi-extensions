@@ -83,6 +83,7 @@ pi-usage tasks --json                      # structured task totals and rows
 pi-usage tasks --llm --json                # opt-in LLM fallback for ambiguous sessions
 pi-usage corrections --period last-30-days # correction rates by task type × model (CSV)
 pi-usage corrections --json                # structured correction and rapid-follow-up rows
+pi-usage corrections --semantic            # paid, resumable LLM correction/redirect backfill (prints estimate first)
 pi-usage speed --period last-30-days        # end-to-end tok/s by task type × model (CSV)
 pi-usage speed --json                       # median/p25/p75 tok/s + median turn latency
 ```
@@ -116,9 +117,9 @@ Every view can export its current slice with `e` — see [Export](#export).
 
 Every session is classified as `design/frontend`, `planning`, `research`, `infra`, `debug`, `docs`, or `other`. The default pass is fully offline: weighted keyword heuristics inspect up to the first three user messages, the session path and any issue ids in it, plus the session cwd. Ties and low-confidence matches become `other` rather than guesses.
 
-`pi-usage tasks --llm` opts ambiguous sessions into batched Makora DeepSeek V4 Flash classification. It reads the configured provider and key reference from `~/.pi/agent/models.json` and uses a forced strict tool call returning `{taskType, confidence}`. Results below the confidence threshold remain `other`. The TUI never makes network calls; it uses heuristics plus any already-cached LLM classifications, so opening `/usage` remains fully offline.
+`pi-usage tasks --llm` opts ambiguous sessions into batched DeepSeek official deepseek-v4-flash classification. It reads the configured provider and key reference from `~/.pi/agent/models.json` and uses a forced strict tool call returning `{taskType, confidence}`. Results below the confidence threshold remain `other`. The TUI never makes network calls; it uses heuristics plus any already-cached LLM classifications, so opening `/usage` remains fully offline.
 
-Classifications are cached incrementally in `~/.pi/agent/pi-usage-cache/classifications.json`, keyed by session id and latest file mtime. Task rows include model-attributed assistant usage only; tool, compaction, and summary usage has no reliable originating model and remains visible in the regular Table view instead.
+Classifications are cached incrementally in `~/.pi/agent/pi-usage-cache/semantic.json`, keyed by session id and latest file mtime. Task rows include model-attributed assistant usage only; tool, compaction, and summary usage has no reliable originating model and remains visible in the regular Table view instead.
 
 ### Correction rate
 
@@ -271,7 +272,7 @@ On narrow terminals, `/usage` automatically switches to a compact table instead 
 
 `/usage` builds its stats from every session JSONL file under `<agentDir>/sessions`. To keep opens fast on large histories (multi-GB, thousands of files):
 
-- **On-disk caches.** Per-file usage extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Task classifications use `<agentDir>/pi-usage-cache/classifications.json`, keyed by session id + latest file mtime; direct conversational turns for correction analysis use `<agentDir>/pi-usage-cache/corrections.json`, and turn timing uses `<agentDir>/pi-usage-cache/speed.json`, both keyed by file size + mtime. Warm opens only revisit changed files — on a 5.2 GB / 3,310-file corpus the usage cache takes the open from ~17 s to ~0.3 s.
+- **On-disk caches.** Per-file usage extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Task classifications and LLM correction/redirect verdicts share `<agentDir>/pi-usage-cache/semantic.json` (task verdicts keyed by session id + latest file mtime; correction verdicts keyed per message id with per-session mtime completeness); direct conversational turns for correction analysis use `<agentDir>/pi-usage-cache/corrections.json`, and turn timing uses `<agentDir>/pi-usage-cache/speed.json`, both keyed by file size + mtime. Warm opens only revisit changed files — on a 5.2 GB / 3,310-file corpus the usage cache takes the open from ~17 s to ~0.3 s.
 - **First open** after install (or after deleting the cache) does a one-off full build, showing the usual cancellable loader. Cancelling saves partial progress, so the next open resumes where it left off.
 - The cache is safe to delete at any time; it is rebuilt automatically. Corrupt or version-mismatched caches are ignored and rebuilt rather than trusted.
 - **0.9.3 bumps the cache format to v5** to retain child-session linkage for tool-usage reconciliation (v4 added Pi 0.81.0 tool and summary usage; v3 added session working directory and compaction markers; v2 added thinking level and reasoning tokens). The first open after upgrading does a one-off full rebuild (with a progress message and live file counter), then warm opens are fast again.

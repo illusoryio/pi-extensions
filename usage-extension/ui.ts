@@ -109,12 +109,12 @@ const MSGS_COLUMN: DataColumn = {
 };
 
 const CORRECTION_COLUMN: DataColumn = {
-	label: "Corr",
-	width: 8,
+	label: "SemCorr",
+	width: 9,
 	getValue: (s) => {
 		const turns = s.assistantTurns ?? 0;
-		const corrections = s.corrections ?? 0;
-		if (turns === 0 || corrections === 0) return "-";
+		const corrections = s.semanticReworks ?? 0;
+		if (turns === 0 || (s.semanticClassified ?? 0) === 0) return "-";
 		const percent = (corrections / turns) * 100;
 		return `${percent < 1 ? percent.toFixed(2) : percent.toFixed(1)}%`;
 	},
@@ -387,7 +387,16 @@ export class UsageComponent {
 		stats: T,
 		filter: LensFilter = {}
 	): T & CorrectionCounts {
-		const counts: CorrectionCounts = { assistantTurns: 0, corrections: 0, rapidFollowUps: 0 };
+		const counts: CorrectionCounts = {
+			assistantTurns: 0,
+			corrections: 0,
+			rapidFollowUps: 0,
+			semanticCandidates: 0,
+			semanticClassified: 0,
+			semanticCorrections: 0,
+			semanticRedirects: 0,
+			semanticReworks: 0,
+		};
 		for (const cell of this.correctionData[this.activeTab].cells.values()) {
 			if (filter.taskType && cell.taskType !== filter.taskType) continue;
 			if (filter.provider && cell.provider !== filter.provider) continue;
@@ -397,6 +406,11 @@ export class UsageComponent {
 			counts.assistantTurns += cell.assistantTurns;
 			counts.corrections += cell.corrections;
 			counts.rapidFollowUps += cell.rapidFollowUps;
+			counts.semanticCandidates += cell.semanticCandidates;
+			counts.semanticClassified += cell.semanticClassified;
+			counts.semanticCorrections += cell.semanticCorrections;
+			counts.semanticRedirects += cell.semanticRedirects;
+			counts.semanticReworks += cell.semanticReworks;
 		}
 		return Object.assign({}, stats, counts);
 	}
@@ -918,6 +932,18 @@ export class UsageComponent {
 				? wrapTextWithAnsi(th.fg("dim", "Compact view. Widen the terminal for more columns."), Math.max(width, 1))
 				: [];
 
+		if (this.viewMode === "table" || this.viewMode === "tasks") {
+			const correctionStats = this.correctionData[this.activeTab];
+			const coverage = correctionStats.semanticCoverage;
+			const lower = correctionStats.totals.assistantTurns > 0
+				? correctionStats.totals.corrections / correctionStats.totals.assistantTurns * 100
+				: 0;
+			infoLines.push(this.theme.fg(
+				coverage.sessionPercent >= 0.999 ? "success" : "warning",
+				`Semantic coverage ${Math.round(coverage.sessionPercent * 100)}% sessions / ${Math.round(coverage.messagePercent * 100)}% messages · SemCorr = correction + redirect · regex lower bound ${lower.toFixed(2)}%`
+			));
+		}
+
 		if (this.viewMode === "table") {
 			if (this.tableFilterEditing) {
 				infoLines.push(`${th.fg("accent", `/ ${this.tableFilter}▌`)}  ${th.fg("dim", "[Enter] keep · [Esc] clear")}`);
@@ -941,7 +967,7 @@ export class UsageComponent {
 		return [
 			this.theme.fg("muted", headerLine),
 			this.theme.fg("border", "─".repeat(layout.tableWidth)),
-			this.theme.fg("dim", "Offline classification · use `pi-usage tasks --llm` to classify ambiguous sessions"),
+			this.theme.fg("dim", "Offline by default · `pi-usage tasks --llm` classifies tasks · `pi-usage corrections --semantic` backfills semantic rework"),
 		];
 	}
 

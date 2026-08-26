@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.14.0] - 2026-08-26
+
+### Added
+- Semantic layer: `pi-usage corrections --semantic` (or `--yes`) runs a paid, resumable LLM backfill classifying every direct user follow-up into correction / redirect / clarification / new-task / acknowledgment, batched through DeepSeek official deepseek-v4-flash (or vision-exp) with the preceding assistant text as context.
+- Upfront stderr estimate (messages, sessions, rough cost) before any spend; progress lines per batch; cumulative cache spend printed after each run.
+- Shared cache `~/.pi/agent/pi-usage-cache/semantic.json` used by both the task-type LLM pass and the correction pass (one model client, one file); corrections cache per message id with per-session mtime completeness stamps and a write after every paid batch.
+- Coverage badge in CLI JSON/CSV and the TUI Table/Tasks views (`% sessions / % messages semantically classified`); TUI `Corr` becomes `SemCorr` (semantic correction + redirect rate), with the regex detector retained and labeled as the lower bound.
+- `KNOW-1364` regression fixture: the five quoted operator messages must classify as correction/redirect and are asserted in unit tests plus the binding prompt examples.
+
+### Changed
+- Task-type classification cache migrated from `classifications.json` into the shared `semantic.json`; the old default path getter is now a compatibility alias.
+- The conversational scanner cache (`corrections.json`) bumps to v2 to retain preceding-assistant text for semantic classification; the first run after upgrade does a one-off rescan.
+
 ## [0.13.0] - 2026-08-26
 
 ### Added

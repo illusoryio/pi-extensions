@@ -53,6 +53,8 @@ interface CliOptions {
 	groupBy: GraphGroupBy;
 	cumulative: boolean;
 	useLlm: boolean;
+	runSemantic: boolean;
+	recentSessions: number;
 }
 
 const PERIOD_ALIASES: Record<string, TabName> = {
@@ -88,6 +90,12 @@ Options:
       --per-bucket                      Graph raw buckets instead of cumulative values
       --cumulative                      Graph cumulative values (default)
       --llm                             LLM fallback for ambiguous task classifications (tasks only)
+      --semantic                        Explicitly run paid, resumable semantic correction backfill
+      --recent-sessions N               Limit the semantic backfill to the most recent N sessions
+      --yes                             Alias for --semantic (corrections only; never spends implicitly)
+
+Semantic correction output keeps the regex detector as a labeled lower bound and
+reports cached semantic coverage. Future runs read the cache without spending.
 
 Speed note: historical sessions contain no TTFT. Speed is output tokens divided by
 end-to-end turn wall-clock, excluding samples over 10 minutes.
@@ -122,6 +130,8 @@ function parseArgs(args: string[]): CliOptions | "help" | "version" {
 	let groupBy: GraphGroupBy = "provider";
 	let cumulative = true;
 	let useLlm = false;
+	let runSemantic = false;
+	let recentSessions = 0;
 	let commandSeen = false;
 
 	for (let i = 0; i < args.length; i++) {
@@ -180,12 +190,24 @@ function parseArgs(args: string[]): CliOptions | "help" | "version" {
 			useLlm = true;
 			continue;
 		}
+		if (arg === "--semantic" || arg === "--yes") {
+			runSemantic = true;
+			continue;
+		}
+		if (arg === "--recent-sessions" || arg.startsWith("--recent-sessions=")) {
+			const [value, next] = takeValue(args, i, "--recent-sessions");
+			recentSessions = parseInt(value, 10);
+			if (!Number.isFinite(recentSessions) || recentSessions <= 0) fail("--recent-sessions requires a positive integer");
+			i = next;
+			continue;
+		}
 		fail(`Unknown argument: ${arg}`);
 	}
 
 	if (command === "insights" && format === "csv") format = "json";
 	if (useLlm && command !== "tasks") fail("--llm is only valid with the tasks command");
-	return { command, format, period, metric, groupBy, cumulative, useLlm };
+	if (runSemantic && command !== "corrections") fail("--semantic/--yes is only valid with the corrections command");
+	return { command, format, period, metric, groupBy, cumulative, useLlm, runSemantic, recentSessions };
 }
 
 function serializePeriod(period: TabName, stats: TimeFilteredStats) {
@@ -253,7 +275,16 @@ function printOutput(
 		if (!corrections) fail("Correction usage data was not collected");
 		const stats = corrections[options.period];
 		process.stdout.write(options.format === "json"
-			? JSON.stringify({ period: options.period, totals: stats.totals, rows: correctionRows(stats) }) + "\n"
+			? JSON.stringify({
+				period: options.period,
+				metadata: {
+					semanticCoverage: stats.semanticCoverage,
+					semanticDefinition: "correction + redirect",
+					regexDefinition: "high-precision lower bound",
+				},
+				totals: stats.totals,
+				rows: correctionRows(stats),
+			}) + "\n"
 			: buildCorrectionCsv(stats));
 		return;
 	}
@@ -399,13 +430,31 @@ async function main(): Promise<void> {
 	const tasks = options.command === "tasks" || options.command === "corrections" || options.command === "speed"
 		? await collectTaskUsageData({ usageData: data, useLlm: options.useLlm })
 		: undefined;
-	const corrections = options.command === "corrections"
-		? (await collectCorrectionUsageData({ usageData: data })).data
+	const correctionCollection = options.command === "corrections"
+		? await collectCorrectionUsageData({
+			usageData: data,
+			runSemantic: options.runSemantic,
+			recentSessions: options.recentSessions,
+			onSemanticEstimate: (estimate) => {
+				process.stderr.write(
+					`Semantic backfill estimate: ${estimate.messages.toLocaleString()} messages in ${estimate.sessions.toLocaleString()} sessions; ` +
+					`~${estimate.inputTokens.toLocaleString()} input + ${estimate.outputTokens.toLocaleString()} output tokens; ` +
+					`rough cost $${estimate.costUsd.toFixed(4)}. Proceeding only because ${process.argv.includes("--yes") ? "--yes" : "--semantic"} was supplied.\n`
+				);
+			},
+			onSemanticProgress: (progress) => {
+				process.stderr.write(`Semantic backfill ${progress.classified.toLocaleString()}/${progress.total.toLocaleString()} messages (batch ${progress.batch}/${progress.batches}, spent $${progress.spentUsd.toFixed(4)} this run)\n`);
+			},
+		})
 		: undefined;
+	const corrections = correctionCollection?.data;
 	const speed = options.command === "speed"
 		? await collectSpeedUsageData({ usageData: data })
 		: undefined;
 	printOutput(data, options, tasks, corrections, speed);
+	if (options.runSemantic && correctionCollection) {
+		process.stderr.write(`Semantic cache total spend: $${correctionCollection.semanticSpend.costUsd.toFixed(4)} across ${correctionCollection.semanticSpend.requests.toLocaleString()} paid batches.\n`);
+	}
 }
 
 main().catch((error) => {
