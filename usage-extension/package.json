@@ -1,7 +1,20 @@
 {
   "name": "@tmustier/pi-usage-extension",
-  "version": "0.9.4",
-  "description": "Usage statistics dashboard for Pi sessions.",
+  "version": "0.10.0",
+  "description": "Usage statistics CLI and dashboard for Pi sessions.",
+  "type": "module",
+  "bin": {
+    "pi-usage": "./cli.ts"
+  },
+  "exports": {
+    "./core": "./core/index.ts",
+    "./ui": "./ui.ts",
+    "./extension": "./index.ts"
+  },
+  "scripts": {
+    "build:binary": "bun build --compile ./cli.ts --outfile ./dist/pi-usage",
+    "typecheck": "tsc --noEmit --target ES2022 --module preserve --moduleResolution bundler --allowImportingTsExtensions --resolveJsonModule --esModuleInterop --skipLibCheck ./index.ts ./ui.ts ./cli.ts ./core/index.ts"
+  },
   "license": "MIT",
   "author": "Thomas Mustier",
   "keywords": [
@@ -9,11 +22,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tmustier/pi-extensions.git",
+    "url": "git+https://github.com/illusoryio/pi-extensions.git",
     "directory": "usage-extension"
   },
-  "bugs": "https://github.com/tmustier/pi-extensions/issues",
-  "homepage": "https://github.com/tmustier/pi-extensions/tree/main/usage-extension",
+  "bugs": "https://github.com/illusoryio/pi-extensions/issues",
+  "homepage": "https://github.com/illusoryio/pi-extensions/tree/main/usage-extension",
   "pi": {
     "extensions": [
       "index.ts"

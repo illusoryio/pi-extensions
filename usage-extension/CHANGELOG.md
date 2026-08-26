@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.0] - 2026-08-26
+
+### Added
+- `pi-usage` standalone entrypoint: bare runs mount the shared dashboard with `ProcessTerminal`/`TuiMainScreen`; `--json`, table CSV, insights JSON, and graph CSV/JSON provide scriptable stdout.
+- Period, graph metric/grouping, and cumulative/per-bucket CLI selectors.
+- Importable `core/index.ts` surface for parser, aggregation, graph, and export builders.
+- Bun compiled-binary build script.
+
+### Changed
+- Lifted `data.ts`, `export.ts`, and `graph.ts` unchanged into `core/` and rewired `/usage` through the shared core.
+- Extracted the existing `UsageComponent` into a shared UI module and replaced Pi's `DynamicBorder` dependency with an equivalent pi-tui component.
+
+### Internal
+- Cache format and parsing/caching/deduplication behavior remain unchanged.
+
 ## [0.9.4] - 2026-07-22
 
 ### Changed

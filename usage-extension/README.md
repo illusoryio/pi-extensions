@@ -1,17 +1,29 @@
-# /usage - Usage Statistics Dashboard
+# pi-usage - Usage Statistics CLI and Dashboard
 
-A Pi extension that displays aggregated usage statistics across all sessions.
+A standalone CLI/TUI and Pi extension that display aggregated usage statistics across all sessions. Both entrypoints use the same parser, cache, deduplication, export builders, and dashboard component.
 
 ![Default graphs view of /usage](graphs-screenshot.png)
 
 ## Compatibility
 
 - **Pi version:** 0.42.4+
-- **Last updated:** 2026-07-22 (0.9.3)
+- **Last updated:** 2026-08-26 (0.10.0)
 
 Pi 0.81.0+ can persist tool-result, compaction, and branch-summary usage. `/usage` includes that auxiliary usage in totals under `Tools / summaries`. Nested-agent reports are reconciled against recursively scanned child sessions, so a child call is counted once: when every child session file behind a report is part of the scan, the children are the record and the parent's aggregate is skipped; otherwise the report is counted. Older Pi versions remain supported.
 
 ## Installation
+
+### Standalone CLI from this fork
+
+```bash
+git clone https://github.com/illusoryio/pi-extensions.git
+cd pi-extensions/usage-extension
+bun install
+bun run build:binary
+./dist/pi-usage --help
+```
+
+The source entrypoint can also run directly with `bun ./cli.ts`. The package exposes a `pi-usage` bin when installed through a package manager.
 
 ### Pi package manager
 
@@ -20,7 +32,7 @@ pi install npm:@tmustier/pi-usage-extension
 ```
 
 ```bash
-pi install git:github.com/tmustier/pi-extensions
+pi install git:github.com/illusoryio/pi-extensions
 ```
 
 Then filter to just this extension in `~/.pi/agent/settings.json`:
@@ -29,7 +41,7 @@ Then filter to just this extension in `~/.pi/agent/settings.json`:
 {
   "packages": [
     {
-      "source": "git:github.com/tmustier/pi-extensions",
+      "source": "git:github.com/illusoryio/pi-extensions",
       "extensions": ["usage-extension/index.ts"]
     }
   ]
@@ -50,10 +62,35 @@ Add to your `~/.pi/agent/settings.json`:
 
 ## Usage
 
+### Standalone
+
+A bare invocation opens the existing dashboard through `pi-tui`, outside Pi:
+
+```bash
+pi-usage
+```
+
+Scriptable commands write only data to stdout:
+
+```bash
+pi-usage --json                         # all-time table data as compact JSON
+pi-usage table --period this-week       # per-model CSV
+pi-usage insights --period last-30-days # structured insights JSON
+pi-usage graph --period today           # cumulative cost-by-provider CSV
+pi-usage graph --metric tokens --group-by model --per-bucket --json
+```
+
+Periods are `today`, `this-week`, `last-week`, `last-30-days`, and `all-time`. Graph metrics are `cost`, `tokens`, `messages`, and `reasoning`; groupings are `provider`, `model`, `thinking`, and `total`.
+
+### Pi extension
+
 In Pi, run:
+
 ```
 /usage
 ```
+
+The extension is a thin wrapper around `core/index.ts` and the shared `UsageComponent`, so its behavior and cache remain unchanged.
 
 ## Features
 
