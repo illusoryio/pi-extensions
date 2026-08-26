@@ -25,6 +25,8 @@ import {
 } from "./core/graph.ts";
 import type { GraphGroupBy, GraphMetric, GraphModel } from "./core/graph.ts";
 import type { CorrectionCounts, CorrectionUsageData } from "./core/corrections.ts";
+import { summarizeSpeed } from "./core/speed.ts";
+import type { SpeedSummary, SpeedUsageData } from "./core/speed.ts";
 import { buildTaskCsv, TASK_TYPES } from "./core/tasks.ts";
 import type { TaskType, TaskTypeStats, TaskUsageData } from "./core/tasks.ts";
 import {
@@ -62,7 +64,15 @@ const VIEW_LABELS: Record<ViewMode, string> = {
 // Column Configuration
 // =============================================================================
 
-type DisplayStats = BaseStats & { sessions: Set<string> | number } & Partial<CorrectionCounts>;
+type DisplayStats = BaseStats & { sessions: Set<string> | number } & Partial<CorrectionCounts & SpeedSummary>;
+
+type LensFilter = {
+	taskType?: TaskType;
+	provider?: string;
+	model?: string;
+	models?: Set<string>;
+	pairs?: Set<string>;
+};
 
 interface DataColumn {
 	label: string;
@@ -110,6 +120,16 @@ const CORRECTION_COLUMN: DataColumn = {
 	},
 };
 
+const SPEED_COLUMN: DataColumn = {
+	label: "Tok/s",
+	width: 8,
+	getValue: (s) => {
+		const speed = s.medianTokPerSec ?? 0;
+		if (speed <= 0) return "-";
+		return speed < 10 ? speed.toFixed(1) : Math.round(speed).toString();
+	},
+};
+
 const COST_COLUMN: DataColumn = {
 	label: "Cost",
 	width: 9,
@@ -150,6 +170,7 @@ const FULL_DATA_COLUMNS: DataColumn[] = [
 	SESSIONS_COLUMN,
 	MSGS_COLUMN,
 	CORRECTION_COLUMN,
+	SPEED_COLUMN,
 	COST_COLUMN,
 	TOKENS_COLUMN,
 	INPUT_COLUMN,
@@ -159,9 +180,9 @@ const FULL_DATA_COLUMNS: DataColumn[] = [
 
 const TABLE_LAYOUTS: TableLayoutCandidate[] = [
 	{ columns: FULL_DATA_COLUMNS, minNameWidth: MAX_NAME_COL_WIDTH },
-	{ columns: [SESSIONS_COLUMN, MSGS_COLUMN, CORRECTION_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 14, compact: true },
-	{ columns: [SESSIONS_COLUMN, CORRECTION_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 12, compact: true },
-	{ columns: [COST_COLUMN, TOKENS_COLUMN], minNameWidth: 10, compact: true },
+	{ columns: [SESSIONS_COLUMN, MSGS_COLUMN, CORRECTION_COLUMN, SPEED_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 14, compact: true },
+	{ columns: [SESSIONS_COLUMN, CORRECTION_COLUMN, SPEED_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 12, compact: true },
+	{ columns: [SPEED_COLUMN, COST_COLUMN, TOKENS_COLUMN], minNameWidth: 10, compact: true },
 	{ columns: [COST_COLUMN], minNameWidth: 8, compact: true },
 ];
 
@@ -308,6 +329,7 @@ export class UsageComponent {
 	private data: UsageData;
 	private taskData: TaskUsageData;
 	private correctionData: CorrectionUsageData;
+	private speedData: SpeedUsageData;
 	private selectedIndex = 0;
 	private taskSelectedIndex = 0;
 	private expandedTasks = new Set<TaskType>();
@@ -327,12 +349,14 @@ export class UsageComponent {
 	private tableFilterEditing = false;
 	private graphHidden = new Set<string>();
 	private graphLegendIndex = 0;
+	private speedSummaryCache = new Map<string, SpeedSummary>();
 
 	constructor(
 		theme: UsageTheme,
 		data: UsageData,
 		taskData: TaskUsageData,
 		correctionData: CorrectionUsageData,
+		speedData: SpeedUsageData,
 		requestRender: () => void,
 		done: () => void
 	) {
@@ -342,6 +366,7 @@ export class UsageComponent {
 		this.data = data;
 		this.taskData = taskData;
 		this.correctionData = correctionData;
+		this.speedData = speedData;
 		this.updateProviderOrder();
 	}
 
@@ -360,7 +385,7 @@ export class UsageComponent {
 
 	private withCorrections<T extends BaseStats & { sessions: Set<string> | number }>(
 		stats: T,
-		filter: { taskType?: TaskType; provider?: string; model?: string; models?: Set<string>; pairs?: Set<string> } = {}
+		filter: LensFilter = {}
 	): T & CorrectionCounts {
 		const counts: CorrectionCounts = { assistantTurns: 0, corrections: 0, rapidFollowUps: 0 };
 		for (const cell of this.correctionData[this.activeTab].cells.values()) {
@@ -374,6 +399,34 @@ export class UsageComponent {
 			counts.rapidFollowUps += cell.rapidFollowUps;
 		}
 		return Object.assign({}, stats, counts);
+	}
+
+	private withLenses<T extends BaseStats & { sessions: Set<string> | number }>(stats: T, filter: LensFilter = {}): DisplayStats {
+		const filterKey = [
+			this.activeTab,
+			filter.taskType ?? "",
+			filter.provider ?? "",
+			filter.model ?? "",
+			filter.models ? Array.from(filter.models).sort().join("\u0001") : "",
+			filter.pairs ? Array.from(filter.pairs).sort().join("\u0001") : "",
+		].join("\u0002");
+		let speed = this.speedSummaryCache.get(filterKey);
+		if (!speed) {
+			const rates: number[] = [];
+			const latenciesMs: number[] = [];
+			for (const cell of this.speedData[this.activeTab].cells.values()) {
+				if (filter.taskType && cell.taskType !== filter.taskType) continue;
+				if (filter.provider && cell.provider !== filter.provider) continue;
+				if (filter.model && cell.model !== filter.model) continue;
+				if (filter.models && !filter.models.has(cell.model)) continue;
+				if (filter.pairs && !filter.pairs.has(`${cell.provider}\u0000${cell.model}`)) continue;
+				for (const rate of cell.rates) rates.push(rate);
+				for (const latency of cell.latenciesMs) latenciesMs.push(latency);
+			}
+			speed = summarizeSpeed(rates, latenciesMs);
+			this.speedSummaryCache.set(filterKey, speed);
+		}
+		return Object.assign(this.withCorrections(stats, filter), speed);
 	}
 
 	private visibleTaskTypes(): Array<[TaskType, TaskTypeStats]> {
@@ -903,7 +956,7 @@ export class UsageComponent {
 			const prefix = index === this.taskSelectedIndex
 				? this.theme.fg("accent", `${arrow} `)
 				: this.theme.fg("dim", `${arrow} `);
-			lines.push(this.renderDataRow(taskType, this.withCorrections(stats, { taskType }), layout, {
+			lines.push(this.renderDataRow(taskType, this.withLenses(stats, { taskType }), layout, {
 				selected: index === this.taskSelectedIndex,
 				prefix,
 			}));
@@ -911,7 +964,7 @@ export class UsageComponent {
 				for (const model of Array.from(stats.models.values()).sort((a, b) => b.cost - a.cost)) {
 					lines.push(this.renderDataRow(
 						`${model.provider}/${model.model}`,
-						this.withCorrections(model, { taskType, provider: model.provider, model: model.model }),
+						this.withLenses(model, { taskType, provider: model.provider, model: model.model }),
 						layout,
 						{ indent: 4, dimAll: true }
 					));
@@ -922,7 +975,7 @@ export class UsageComponent {
 	}
 
 	private renderTaskTotals(layout: TableLayout): string[] {
-		const totals = this.withCorrections(this.taskData[this.activeTab].totals);
+		const totals = this.withLenses(this.taskData[this.activeTab].totals);
 		let totalRow = fitCell(this.theme.bold("Total"), layout.nameWidth);
 		for (const col of layout.columns) {
 			const value = fitCell(col.getValue(totals), col.width, "right");
@@ -996,7 +1049,7 @@ export class UsageComponent {
 			lines.push(
 				this.renderDataRow(
 					providerName,
-					this.withCorrections(providerStats, { provider: providerName, models: visibleModels }),
+					this.withLenses(providerStats, { provider: providerName, models: visibleModels }),
 					layout,
 					{ selected: isSelected, prefix }
 				)
@@ -1008,7 +1061,7 @@ export class UsageComponent {
 				for (const [modelName, modelStats] of models) {
 					lines.push(this.renderDataRow(
 						modelName,
-						this.withCorrections(modelStats, { provider: providerName, model: modelName }),
+						this.withLenses(modelStats, { provider: providerName, model: modelName }),
 						layout,
 						{ indent: 4, dimAll: true }
 					));
@@ -1026,7 +1079,7 @@ export class UsageComponent {
 		for (const [provider, stats] of providers) {
 			for (const model of stats.models.keys()) visiblePairs.add(`${provider}\u0000${model}`);
 		}
-		const correctedTotals = this.withCorrections(totals, { pairs: visiblePairs });
+		const correctedTotals = this.withLenses(totals, { pairs: visiblePairs });
 
 		let totalRow = fitCell(th.bold("Total"), layout.nameWidth);
 		for (const col of layout.columns) {
@@ -1044,7 +1097,11 @@ export class UsageComponent {
 			"Tokens & ↑In include CacheWrite (v0.2.0+)",
 			"Incl. CacheWrite (v0.2.0+)",
 		]);
-		return [this.theme.fg("dim", line), ""];
+		return [
+			this.theme.fg("dim", line),
+			this.theme.fg("dim", "Historical Tok/s = output ÷ end-to-end turn wall-clock; TTFT is unavailable."),
+			"",
+		];
 	}
 
 	private renderHelp(width: number): string[] {
@@ -1112,14 +1169,15 @@ export function createUsageFrame(
 	requestRender: () => void,
 	done: () => void,
 	taskData: TaskUsageData,
-	correctionData: CorrectionUsageData
+	correctionData: CorrectionUsageData,
+	speedData: SpeedUsageData
 ): UsageFrame {
 	const container = new Container();
 	container.addChild(new Spacer(1));
 	container.addChild(new HorizontalBorder((text) => theme.fg("border", text)));
 	container.addChild(new Spacer(1));
 
-	const usage = new UsageComponent(theme, data, taskData, correctionData, requestRender, done);
+	const usage = new UsageComponent(theme, data, taskData, correctionData, speedData, requestRender, done);
 	return {
 		render: (width: number) => {
 			const borderLines = clampLines(container.render(width), width);

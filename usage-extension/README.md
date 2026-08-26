@@ -7,7 +7,7 @@ A standalone CLI/TUI and Pi extension that display aggregated usage statistics a
 ## Compatibility
 
 - **Pi version:** 0.42.4+
-- **Last updated:** 2026-08-26 (0.12.0)
+- **Last updated:** 2026-08-26 (0.13.0)
 
 Pi 0.81.0+ can persist tool-result, compaction, and branch-summary usage. `/usage` includes that auxiliary usage in totals under `Tools / summaries`. Nested-agent reports are reconciled against recursively scanned child sessions, so a child call is counted once: when every child session file behind a report is part of the scan, the children are the record and the parent's aggregate is skipped; otherwise the report is counted. Older Pi versions remain supported.
 
@@ -83,6 +83,8 @@ pi-usage tasks --json                      # structured task totals and rows
 pi-usage tasks --llm --json                # opt-in LLM fallback for ambiguous sessions
 pi-usage corrections --period last-30-days # correction rates by task type × model (CSV)
 pi-usage corrections --json                # structured correction and rapid-follow-up rows
+pi-usage speed --period last-30-days        # end-to-end tok/s by task type × model (CSV)
+pi-usage speed --json                       # median/p25/p75 tok/s + median turn latency
 ```
 
 Periods are `today`, `this-week`, `last-week`, `last-30-days`, and `all-time`. Graph metrics are `cost`, `tokens`, `messages`, and `reasoning`; groupings are `provider`, `model`, `thinking`, and `total`.
@@ -127,6 +129,16 @@ Short direct user follow-ups (non-empty, at most 240 characters and 40 words) ar
 Precision was tuned against a deterministic SHA-256-sorted sample of 100 matches from 365 real all-time matches on 2026-08-26: all 100 were labeled genuine rework/correction signals, for an estimated **0% false-positive rate / 100% precision in the sample**. Before resampling, seven observed false positives were removed from the 372-match candidate set, including `No, that's fine...`, wrong-chat/session admissions, operator self-corrections, and hypothetical future reverts. This is a heuristic, not sentiment analysis. Known residual ambiguity includes rework briefs that quote someone else's “wrong” finding, process-level stop/steer messages, and retries caused by external state rather than model error. Precision is favored over recall: self-corrections (`I was wrong`), “correct me if I'm wrong,” exploratory “what is wrong?” questions, `wrong play`, `do not redo`, acceptances, and unanchored quoted/pasted triggers are deliberately excluded.
 
 Conversation scans are cached per file at `~/.pi/agent/pi-usage-cache/corrections.json` using size + mtime, so warm correction reports only rescan changed sessions.
+
+### Generation speed
+
+The Table and Tasks views include a period-scoped **Tok/s** column showing median end-to-end output throughput for the visible provider/model/task slice. `pi-usage speed` exposes the full task type × provider/model distribution: measured turns, median/p25/p75 tok/s, and median turn latency.
+
+For each assistant message directly following a user or tool-result boundary, wall-clock latency is the assistant JSONL entry's completion timestamp minus that boundary entry's timestamp. Throughput is persisted `usage.output` tokens divided by that wall clock. Nonpositive durations, zero-output observations, and gaps over 10 minutes are excluded rather than clamped; the latter are not credible generation windows. Assistant observations use the same timestamp + usage fingerprint dedupe identity as the primary usage lens, so copied branch history is counted once. Percentiles use linear interpolation.
+
+**Historical TTFT limitation:** session JSONL does not persist time-to-first-token. This lens measures **end-to-end turn throughput**, including TTFT and request/runtime overhead; it is not the model's streaming-only generation rate. Live `pi-tps` telemetry can measure TTFT, but it cannot be reconstructed for old sessions. The CLI repeats this limitation in help, JSON metadata (`ttftAvailable: false`), and CSV columns.
+
+Timing scans are cached per file at `~/.pi/agent/pi-usage-cache/speed.json` using size + mtime, so warm speed reports only rescan changed sessions.
 
 ![Table view of /usage](screenshot.png)
 
@@ -227,6 +239,7 @@ Time periods are calculated in the local timezone where Pi runs. If you want to 
 | **Sessions** | Number of unique sessions |
 | **Msgs** | Number of assistant messages; auxiliary `Tools / summaries` usage does not inflate this count |
 | **Corr** | Corrections ÷ assistant turns for the visible provider/model/task slice |
+| **Tok/s** | Median output tokens ÷ end-to-end assistant wall-clock for the visible slice; historical TTFT is unavailable |
 | **Cost** | Total cost in USD (from API response), including usage reported by tools and summaries |
 | **Tokens** | Fresh tokens for the turn: input + output + cache write |
 | **↑In** | Fresh input tokens: input + cache write *(dimmed)* |
@@ -258,7 +271,7 @@ On narrow terminals, `/usage` automatically switches to a compact table instead 
 
 `/usage` builds its stats from every session JSONL file under `<agentDir>/sessions`. To keep opens fast on large histories (multi-GB, thousands of files):
 
-- **On-disk caches.** Per-file usage extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Task classifications use `<agentDir>/pi-usage-cache/classifications.json`, keyed by session id + latest file mtime; direct conversational turns for correction analysis use `<agentDir>/pi-usage-cache/corrections.json`, keyed by file size + mtime. Warm opens only revisit changed files — on a 5.2 GB / 3,310-file corpus the usage cache takes the open from ~17 s to ~0.3 s.
+- **On-disk caches.** Per-file usage extraction results are cached in `<agentDir>/usage-extension-cache.json` (respects `PI_CODING_AGENT_DIR`), keyed by file size + mtime. Task classifications use `<agentDir>/pi-usage-cache/classifications.json`, keyed by session id + latest file mtime; direct conversational turns for correction analysis use `<agentDir>/pi-usage-cache/corrections.json`, and turn timing uses `<agentDir>/pi-usage-cache/speed.json`, both keyed by file size + mtime. Warm opens only revisit changed files — on a 5.2 GB / 3,310-file corpus the usage cache takes the open from ~17 s to ~0.3 s.
 - **First open** after install (or after deleting the cache) does a one-off full build, showing the usual cancellable loader. Cancelling saves partial progress, so the next open resumes where it left off.
 - The cache is safe to delete at any time; it is rebuilt automatically. Corrupt or version-mismatched caches are ignored and rebuilt rather than trusted.
 - **0.9.3 bumps the cache format to v5** to retain child-session linkage for tool-usage reconciliation (v4 added Pi 0.81.0 tool and summary usage; v3 added session working directory and compaction markers; v2 added thinking level and reasoning tokens). The first open after upgrading does a one-off full rebuild (with a progress message and live file counter), then warm opens are fast again.

@@ -4,3 +4,4 @@ export * from "./export.ts";
 export * from "./graph.ts";
 export * from "./tasks.ts";
 export * from "./corrections.ts";
+export * from "./speed.ts";

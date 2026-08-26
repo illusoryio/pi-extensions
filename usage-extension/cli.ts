@@ -14,14 +14,18 @@ import {
 	buildGraphModel,
 	buildCorrectionCsv,
 	buildInsightsJson,
+	buildSpeedCsv,
 	buildTableCsv,
 	buildTaskCsv,
 	collectCorrectionUsageData,
+	collectSpeedUsageData,
 	collectTaskUsageData,
 	collectUsageData,
 	GROUP_ORDER,
 	METRIC_ORDER,
 	correctionRows,
+	MAX_TURN_LATENCY_MS,
+	speedRows,
 	taskRows,
 	taskTypeSummaries,
 } from "./core/index.ts";
@@ -29,6 +33,7 @@ import type {
 	GraphGroupBy,
 	CorrectionUsageData,
 	GraphMetric,
+	SpeedCollection,
 	TabName,
 	TaskUsageData,
 	TimeFilteredStats,
@@ -37,7 +42,7 @@ import type {
 import { createUsageFrame, formatSinceDate } from "./ui.ts";
 import type { UsageTheme, UsageThemeColor } from "./ui.ts";
 
-type Command = "table" | "graph" | "insights" | "tasks" | "corrections";
+type Command = "table" | "graph" | "insights" | "tasks" | "corrections" | "speed";
 type OutputFormat = "csv" | "json";
 
 interface CliOptions {
@@ -72,6 +77,7 @@ Usage:
   pi-usage graph [options]              Print graph-series CSV (or JSON)
   pi-usage tasks [options]              Print task-type × model CSV (or JSON)
   pi-usage corrections [options]        Print correction rates by task type × model
+  pi-usage speed [options]              Print end-to-end generation speed by task type × model
 
 Options:
   -p, --period <period>                 today | this-week | last-week | last-30-days | all-time
@@ -82,6 +88,10 @@ Options:
       --per-bucket                      Graph raw buckets instead of cumulative values
       --cumulative                      Graph cumulative values (default)
       --llm                             LLM fallback for ambiguous task classifications (tasks only)
+
+Speed note: historical sessions contain no TTFT. Speed is output tokens divided by
+end-to-end turn wall-clock, excluding samples over 10 minutes.
+
   -h, --help                            Show help
   -v, --version                         Show version
 `;
@@ -118,13 +128,13 @@ function parseArgs(args: string[]): CliOptions | "help" | "version" {
 		const arg = args[i]!;
 		if (arg === "-h" || arg === "--help") return "help";
 		if (arg === "-v" || arg === "--version") return "version";
-		if (arg === "table" || arg === "graph" || arg === "insights" || arg === "tasks" || arg === "corrections") {
+		if (arg === "table" || arg === "graph" || arg === "insights" || arg === "tasks" || arg === "corrections" || arg === "speed") {
 			if (commandSeen) fail(`Only one output command may be selected (got ${arg})`);
 			command = arg;
 			commandSeen = true;
 			continue;
 		}
-		if (arg === "--table" || arg === "--graph" || arg === "--insights" || arg === "--tasks" || arg === "--corrections") {
+		if (arg === "--table" || arg === "--graph" || arg === "--insights" || arg === "--tasks" || arg === "--corrections" || arg === "--speed") {
 			if (commandSeen) fail(`Only one output command may be selected (got ${arg})`);
 			command = arg.slice(2) as Command;
 			commandSeen = true;
@@ -213,11 +223,30 @@ function printOutput(
 	data: UsageData,
 	options: CliOptions,
 	tasks?: TaskUsageData,
-	corrections?: CorrectionUsageData
+	corrections?: CorrectionUsageData,
+	speed?: SpeedCollection
 ): void {
 	const stats = data[options.period];
 	if (options.command === "insights") {
 		process.stdout.write(buildInsightsJson(options.period, stats.totals, stats.insights.insights));
+		return;
+	}
+	if (options.command === "speed") {
+		if (!speed) fail("Speed usage data was not collected");
+		const stats = speed.data[options.period];
+		process.stdout.write(options.format === "json"
+			? JSON.stringify({
+				period: options.period,
+				metadata: {
+					measurement: "end-to-end turn throughput",
+					ttftAvailable: false,
+					maxTurnLatencyMs: MAX_TURN_LATENCY_MS,
+					excludedSamples: { scope: "allTime", ...speed.exclusions },
+				},
+				totals: stats.totals,
+				rows: speedRows(stats),
+			}) + "\n"
+			: buildSpeedCsv(stats));
 		return;
 	}
 	if (options.command === "corrections") {
@@ -329,6 +358,7 @@ async function runTui(): Promise<void> {
 
 	const tasks = await collectTaskUsageData({ usageData: data, signal: loader.signal });
 	const corrections = (await collectCorrectionUsageData({ usageData: data, signal: loader.signal })).data;
+	const speed = (await collectSpeedUsageData({ usageData: data, signal: loader.signal })).data;
 	loader.dispose();
 	tui.removeChild(loader);
 	await new Promise<void>((resolve) => {
@@ -341,7 +371,7 @@ async function runTui(): Promise<void> {
 			tui.stop();
 			resolve();
 		};
-		const frame = createUsageFrame(theme, data, () => tui.requestRender(), finish, tasks, corrections);
+		const frame = createUsageFrame(theme, data, () => tui.requestRender(), finish, tasks, corrections, speed);
 		closeDashboard = finish;
 		tui.addChild(frame);
 		tui.setFocus(frame);
@@ -366,13 +396,16 @@ async function main(): Promise<void> {
 	}
 	const data = await collectUsageData();
 	if (!data) fail("Usage collection was cancelled");
-	const tasks = options.command === "tasks" || options.command === "corrections"
+	const tasks = options.command === "tasks" || options.command === "corrections" || options.command === "speed"
 		? await collectTaskUsageData({ usageData: data, useLlm: options.useLlm })
 		: undefined;
 	const corrections = options.command === "corrections"
 		? (await collectCorrectionUsageData({ usageData: data })).data
 		: undefined;
-	printOutput(data, options, tasks, corrections);
+	const speed = options.command === "speed"
+		? await collectSpeedUsageData({ usageData: data })
+		: undefined;
+	printOutput(data, options, tasks, corrections, speed);
 }
 
 main().catch((error) => {

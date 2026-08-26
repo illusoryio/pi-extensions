@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.0] - 2026-08-26
+
+### Added
+- `pi-usage speed [--period X] [--json|--csv]` with task type × provider/model measured turns, median/p25/p75 output tok/s, and median turn latency.
+- Period-scoped median **Tok/s** column in the regular provider/model and Tasks TUI tables, including filter-aware totals.
+- Incremental `<agentDir>/pi-usage-cache/speed.json` turn-timing cache keyed by session-file size and mtime.
+
+### Accuracy
+- Wall clock is the assistant entry completion timestamp minus its directly preceding user/tool-result entry timestamp. Samples with nonpositive latency, zero output, or latency over 10 minutes are excluded; copied branch history uses the primary usage lens's timestamp + usage fingerprint dedupe identity.
+- Historical JSONL has no time-to-first-token. The lens is explicitly labeled end-to-end throughput—not streaming-only model speed—in README, CLI help, JSON metadata, CSV output, and the TUI footer.
+
+### Internal
+- The existing usage parser and its cache, deduplication, and nested-session reconciliation remain unchanged.
+
 ## [0.12.0] - 2026-08-26
 
 ### Added
