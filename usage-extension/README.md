@@ -145,7 +145,7 @@ Timing scans are cached per file at `~/.pi/agent/pi-usage-cache/speed.json` usin
 
 ### Filtering the table
 
-- `/` opens a live type-to-filter over provider **and** model names (case-insensitive substring). When only models match, the provider row is recomputed from just the matching models — filtering `sol` shows openai-codex as exactly its `gpt-5.6-sol` numbers. `Enter` keeps the filter, `Esc` clears it.
+- `/` opens a live type-to-filter over provider **and** model names (case-insensitive substring). When only models match, the provider row is recomputed from just the matching models — filtering `sol` shows openai-codex as exactly its `gpt-6-sol` numbers. `Enter` keeps the filter, `Esc` clears it.
 - `x` hides the selected provider row; `a` resets all hides and the filter.
 - The **Total row recomputes over the visible slice**, and a status line makes the cut explicit so a filtered table can't be mistaken for the full period.
 
